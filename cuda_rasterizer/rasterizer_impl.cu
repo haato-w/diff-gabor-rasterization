@@ -159,6 +159,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
+	obtain(chunk, geom.wave, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -203,8 +204,10 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
+	const float* waves,
 	const float* shs,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* opacities,
 	const float* scales,
 	const float scale_modifier,
@@ -249,6 +252,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
+		waves, 
 		(glm::vec2*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
@@ -264,6 +268,7 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
+		geomState.wave, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
@@ -320,6 +325,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+	const float* feature_ptr2 = colors_precomp2 != nullptr ? colors_precomp2 : geomState.rgb;
 	const float* transMat_ptr = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
@@ -328,7 +334,9 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		geomState.means2D,
+		geomState.wave,
 		feature_ptr,
+		feature_ptr2,
 		transMat_ptr,
 		geomState.depths,
 		geomState.normal_opacity,

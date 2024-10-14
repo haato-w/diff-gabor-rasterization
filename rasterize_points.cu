@@ -40,7 +40,9 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torc
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
+	const torch::Tensor& waves,
 	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
@@ -69,7 +71,9 @@ RasterizeGaussiansCUDA(
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
+  CHECK_INPUT(waves);
   CHECK_INPUT(colors);
+  CHECK_INPUT(colors2);
   CHECK_INPUT(opacity);
   CHECK_INPUT(scales);
   CHECK_INPUT(rotations);
@@ -112,8 +116,10 @@ RasterizeGaussiansCUDA(
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
+		waves.contiguous().data<float>(),
 		sh.contiguous().data_ptr<float>(),
 		colors.contiguous().data<float>(), 
+		colors2.contiguous().data<float>(), 
 		opacity.contiguous().data<float>(), 
 		scales.contiguous().data_ptr<float>(),
 		scale_modifier,

@@ -23,7 +23,9 @@ def rasterize_gaussians(
     means2D,
     sh,
     colors_precomp,
+    colors_precomp2,
     opacities,
+    waves, 
     scales,
     rotations,
     cov3Ds_precomp,
@@ -34,7 +36,9 @@ def rasterize_gaussians(
         means2D,
         sh,
         colors_precomp,
+        colors_precomp2,
         opacities,
+        waves, 
         scales,
         rotations,
         cov3Ds_precomp,
@@ -49,18 +53,25 @@ class _RasterizeGaussians(torch.autograd.Function):
         means2D,
         sh,
         colors_precomp,
+        colors_precomp2,
         opacities,
+        waves, 
         scales,
         rotations,
         cov3Ds_precomp,
         raster_settings,
     ):
+        
+        print("rasterizer")
+        print("waves: ", waves)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
             raster_settings.bg, 
             means3D,
+            waves, 
             colors_precomp,
+            colors_precomp2,
             opacities,
             scales,
             rotations,
@@ -185,7 +196,7 @@ class GaussianRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, shs = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, waves: torch.Tensor, shs = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
@@ -214,7 +225,9 @@ class GaussianRasterizer(nn.Module):
             means2D,
             shs,
             colors_precomp,
+            colors_precomp2,
             opacities,
+            waves, 
             scales, 
             rotations,
             cov3D_precomp,
