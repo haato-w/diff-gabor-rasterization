@@ -393,16 +393,19 @@ renderCUDA(
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
 			float alpha = min(0.99f, opa * exp(power) * harmonic1);
-			if (alpha < 1.0f / 255.0f)
+			float alpha2 = min(0.99f, opa * exp(power) * harmonic2);
+			if (alpha + alpha2 < 1.0f / 255.0f)
 				continue;
-			float test_T = T * (1 - alpha);
+			float test_T = T * (1 - alpha + alpha2);
 			if (test_T < 0.0001f)
 			{
 				done = true;
 				continue;
 			}
 
-			float w = alpha * T;
+			float w1 = alpha * T;
+			float w2 = alpha2 * T;
+			float w = w1 + w2;
 #if RENDER_AXUTILITY
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
@@ -423,8 +426,10 @@ renderCUDA(
 #endif
 
 			// Eq. (3) from 3D Gaussian splatting paper.
-			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
+			for (int ch = 0; ch < CHANNELS; ch++) {
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * w1;
+				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w2;
+			}
 			T = test_T;
 
 			// Keep track of last range entry to update this

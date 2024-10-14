@@ -61,9 +61,6 @@ class _RasterizeGaussians(torch.autograd.Function):
         cov3Ds_precomp,
         raster_settings,
     ):
-        
-        print("rasterizer")
-        print("waves: ", waves)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
