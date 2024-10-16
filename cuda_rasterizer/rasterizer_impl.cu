@@ -206,6 +206,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* means3D,
 	const float* waves,
 	const float* shs,
+	const float* shs2,
 	const float* colors_precomp,
 	const float* colors_precomp2,
 	const float* opacities,
@@ -258,9 +259,11 @@ int CudaRasterizer::Rasterizer::forward(
 		(glm::vec4*)rotations,
 		opacities,
 		shs,
+		shs2,
 		geomState.clamped,
 		transMat_precomp,
 		colors_precomp,
+		colors_precomp2,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
 		width, height,
@@ -272,6 +275,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
+		geomState.rgb2,
 		geomState.normal_opacity,
 		tile_grid,
 		geomState.tiles_touched,
@@ -325,7 +329,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
-	const float* feature_ptr2 = colors_precomp2 != nullptr ? colors_precomp2 : geomState.rgb;
+	const float* feature_ptr2 = colors_precomp2 != nullptr ? colors_precomp2 : geomState.rgb2;
 	const float* transMat_ptr = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,

@@ -120,6 +120,7 @@ RasterizeGaussiansCUDA(
 		means3D.contiguous().data<float>(),
 		waves.contiguous().data<float>(),
 		sh.contiguous().data_ptr<float>(),
+		sh2.contiguous().data_ptr<float>(),
 		colors.contiguous().data<float>(), 
 		colors2.contiguous().data<float>(), 
 		opacity.contiguous().data<float>(), 
