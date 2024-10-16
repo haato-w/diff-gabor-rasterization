@@ -87,6 +87,11 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.debug
         )
 
+        print("_RasterizeGaussians forward is called")
+        print("colors_precomp: \n", colors_precomp)
+        print("colors_precomp2: \n", colors_precomp2)
+        print("waves: \n", waves)
+
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
@@ -98,11 +103,13 @@ class _RasterizeGaussians(torch.autograd.Function):
                 raise ex
         else:
             num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gaussians(*args)
+        
+        print("CUDA code done")
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
-        ctx.save_for_backward(colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
+        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, waves, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer)
         return color, radii, depth
 
     @staticmethod
@@ -111,7 +118,9 @@ class _RasterizeGaussians(torch.autograd.Function):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
-        colors_precomp, means3D, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+        colors_precomp, colors_precomp2, means3D, waves, scales, rotations, cov3Ds_precomp, radii, sh, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+
+        print("waves: \n", waves)
 
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
@@ -149,12 +158,17 @@ class _RasterizeGaussians(torch.autograd.Function):
         else:
              grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_scales, grad_rotations = _C.rasterize_gaussians_backward(*args)
 
+        grad_waves = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
+        grad_colors_precomp2 = torch.zeros((grad_means2D.shape[0], 3)).float().cuda() # tmp
+
         grads = (
             grad_means3D,
             grad_means2D,
             grad_sh,
             grad_colors_precomp,
+            grad_colors_precomp2,
             grad_opacities,
+            grad_waves, 
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
@@ -207,6 +221,7 @@ class GaussianRasterizer(nn.Module):
             shs = torch.Tensor([]).cuda()
         if colors_precomp is None:
             colors_precomp = torch.Tensor([]).cuda()
+            colors_precomp2 = torch.Tensor([]).cuda()
 
         if scales is None:
             scales = torch.Tensor([]).cuda()
