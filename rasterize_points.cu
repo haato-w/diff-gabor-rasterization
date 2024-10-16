@@ -55,6 +55,7 @@ RasterizeGaussiansCUDA(
 	const int image_height,
 	const int image_width,
 	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
@@ -81,6 +82,7 @@ RasterizeGaussiansCUDA(
   CHECK_INPUT(viewmatrix);
   CHECK_INPUT(projmatrix);
   CHECK_INPUT(sh);
+  CHECK_INPUT(sh2);
   CHECK_INPUT(campos);
 
   auto int_opts = means3D.options().dtype(torch::kInt32);
@@ -143,8 +145,10 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
  RasterizeGaussiansBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
+	const torch::Tensor& waves,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -156,6 +160,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& dL_dout_color,
 	const torch::Tensor& dL_dout_others,
 	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
 	const int degree,
 	const torch::Tensor& campos,
 	const torch::Tensor& geomBuffer,
@@ -167,14 +172,17 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
+  CHECK_INPUT(waves);
   CHECK_INPUT(radii);
   CHECK_INPUT(colors);
+  CHECK_INPUT(colors2);
   CHECK_INPUT(scales);
   CHECK_INPUT(rotations);
   CHECK_INPUT(transMat_precomp);
   CHECK_INPUT(viewmatrix);
   CHECK_INPUT(projmatrix);
   CHECK_INPUT(sh);
+  CHECK_INPUT(sh2);
   CHECK_INPUT(campos);
   CHECK_INPUT(binningBuffer);
   CHECK_INPUT(imageBuffer);
@@ -193,10 +201,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
+  torch::Tensor dL_dcolors2 = torch::zeros({P, NUM_CHANNELS}, means3D.options());
   torch::Tensor dL_dnormal = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
+  torch::Tensor dL_dwave = torch::zeros({P, 2}, means3D.options());
   torch::Tensor dL_dtransMat = torch::zeros({P, 9}, means3D.options());
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
+  torch::Tensor dL_dsh2 = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 2}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
   
