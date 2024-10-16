@@ -360,8 +360,11 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
+	const float* waves,
 	const float* shs,
+	const float* shs2,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -379,10 +382,13 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
+	float* dL_dwave,
 	float* dL_dcolor,
+	float* dL_dcolor2,
 	float* dL_dmean3D,
 	float* dL_dtransMat,
 	float* dL_dsh,
+	float* dL_dsh2,
 	float* dL_dscale,
 	float* dL_drot,
 	bool debug)
@@ -406,6 +412,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* color_ptr2 = (colors_precomp2 != nullptr) ? colors_precomp2 : geomState.rgb2;
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(BACKWARD::render(
@@ -417,8 +424,10 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		background,
 		geomState.means2D,
+		geomState.wave,
 		geomState.normal_opacity,
 		color_ptr,
+		color_ptr2,
 		transMat_ptr,
 		depth_ptr,
 		imgState.accum_alpha,
@@ -429,7 +438,9 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dwave,
+		dL_dcolor,
+		dL_dcolor2), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -439,6 +450,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)means3D,
 		radii,
 		shs,
+		shs2,
 		geomState.clamped,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
@@ -453,7 +465,9 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dnormal,		     // gradient inputs
 		dL_dtransMat,
 		dL_dcolor,
+		dL_dcolor2,
 		dL_dsh,
+		dL_dsh2,
 		(glm::vec3*)dL_dmean3D,
 		(glm::vec2*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)

@@ -149,9 +149,11 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
+	const float2* __restrict__ waves,
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
+	const float* __restrict__ colors2,
 	const float* __restrict__ depths,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
@@ -161,7 +163,9 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dwave,
+	float* __restrict__ dL_dcolors,
+	float* __restrict__ dL_dcolors2)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -579,6 +583,7 @@ __global__ void preprocessCUDA(
 	const float* transMats,
 	const int* radii,
 	const float* shs,
+	const float* shs2,
 	const bool* clamped,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
@@ -594,7 +599,9 @@ __global__ void preprocessCUDA(
 	float* dL_dtransMats,
 	const float* dL_dnormal3Ds,
 	float* dL_dcolors,
+	float* dL_dcolors2,
 	float* dL_dshs,
+	float* dL_dshs2,
 	float3* dL_dmean2Ds,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
@@ -635,6 +642,7 @@ void BACKWARD::preprocess(
 	const float3* means3D,
 	const int* radii,
 	const float* shs,
+	const float* shs2,
 	const bool* clamped,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
@@ -649,7 +657,9 @@ void BACKWARD::preprocess(
 	const float* dL_dnormal3Ds,
 	float* dL_dtransMats,
 	float* dL_dcolors,
+	float* dL_dcolors2,
 	float* dL_dshs,
+	float* dL_dshs2,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
 	glm::vec4* dL_drots)
@@ -660,6 +670,7 @@ void BACKWARD::preprocess(
 		transMats,
 		radii,
 		shs,
+		shs2,
 		clamped,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
@@ -674,7 +685,9 @@ void BACKWARD::preprocess(
 		dL_dtransMats,
 		dL_dnormal3Ds,
 		dL_dcolors,
+		dL_dcolors2,
 		dL_dshs,
+		dL_dshs2,
 		dL_dmean2Ds,
 		dL_dmean3Ds,
 		dL_dscales,
@@ -690,8 +703,10 @@ void BACKWARD::render(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
+	const float2* waves,
 	const float4* normal_opacity,
 	const float* colors,
+	const float* colors2,
 	const float* transMats,
 	const float* depths,
 	const float* final_Ts,
@@ -702,7 +717,9 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dwave,
+	float* dL_dcolors,
+	float* dL_dcolors2)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
@@ -711,9 +728,11 @@ void BACKWARD::render(
 		focal_x, focal_y,
 		bg_color,
 		means2D,
+		waves, 
 		normal_opacity,
 		transMats,
 		colors,
+		colors2,
 		depths,
 		final_Ts,
 		n_contrib,
@@ -723,6 +742,8 @@ void BACKWARD::render(
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dwave,
+		dL_dcolors,
+		dL_dcolors2
 		);
 }

@@ -92,9 +92,6 @@ class _RasterizeGaussians(torch.autograd.Function):
         )
 
         print("_RasterizeGaussians forward is called")
-        print("colors_precomp: \n", colors_precomp)
-        print("colors_precomp2: \n", colors_precomp2)
-        print("waves: \n", waves)
 
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
@@ -126,6 +123,8 @@ class _RasterizeGaussians(torch.autograd.Function):
 
         print("in backward")
         print("waves: \n", waves)
+        print("colors_precomp: \n", colors_precomp)
+        print("colors_precomp2: \n", colors_precomp2)
         print("sh: \n", sh)
         print("sh2: \n", sh2)
 
