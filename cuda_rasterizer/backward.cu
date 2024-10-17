@@ -186,8 +186,10 @@ renderCUDA(
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float2 collected_wave[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float collected_colors2[C * BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -264,12 +266,14 @@ renderCUDA(
 			const int coll_id = point_list[range.y - progress - 1];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_wave[block.thread_rank()] = waves[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
 			for (int i = 0; i < C; i++)
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
+				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -286,6 +290,7 @@ renderCUDA(
 			// compute ray-splat intersection as before
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
+			const float2 wave_vec = collected_wave[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
@@ -325,9 +330,15 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
+			const float PI = 3.14159265359;
+			float dot_value = wave_vec.x * s.x + wave_vec.y * s.y;
+			const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
+			const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
 			for (int ch = 0; ch < C; ch++)
 			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
+				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
+				const float c = harmonic1 * c1 + harmonic2 * c2;
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
@@ -337,8 +348,21 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 + cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
+				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 - cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
 			}
+			// w vector gradient
+			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
+			const float g0 = collected_colors[1 * BLOCK_SIZE + j];
+			const float b0 = collected_colors[2 * BLOCK_SIZE + j];
+			const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+			const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
+			const float tmp1 = PI * wave_vec.x * sin(2 * PI * dot_value);
+			const float tmp2 = PI * wave_vec.y * sin(2 * PI * dot_value);
+			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp1); // ここにwaveの重みを足す
+			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp2); // ここにwaveの重みを足す
 
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
@@ -629,7 +653,9 @@ __global__ void preprocessCUDA(
 
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs);
-	
+	if (shs2)
+		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs2, clamped, (glm::vec3*)dL_dcolors2, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs2);
+
 	// hack the gradient here for densitification
 	float depth = transMats[idx * 9 + 8];
 	dL_dmean2Ds[idx].x = dL_dtransMats[idx * 9 + 2] * depth * 0.5 * float(W); // to ndc 
