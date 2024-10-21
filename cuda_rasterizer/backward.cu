@@ -362,7 +362,7 @@ renderCUDA(
 			const float tmp1 = PI * wave_vec.x * sin(2 * PI * dot_value);
 			const float tmp2 = PI * wave_vec.y * sin(2 * PI * dot_value);
 			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp1); // ここにwaveの重みを足す
-			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp2); // ここにwaveの重みを足す
+			atomicAdd(&(dL_dwave[global_id * 2 + 1]), dchannel_dcolor * part * tmp2); // ここにwaveの重みを足す
 
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
