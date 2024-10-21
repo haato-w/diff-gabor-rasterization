@@ -359,8 +359,8 @@ renderCUDA(
 			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
 			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
 			const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
-			const float tmp1 = PI * wave_vec.x * sin(2 * PI * dot_value);
-			const float tmp2 = PI * wave_vec.y * sin(2 * PI * dot_value);
+			const float tmp1 = PI * s.x * sin(2 * PI * dot_value);
+			const float tmp2 = PI * s.y * sin(2 * PI * dot_value);
 			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp1); // ここにwaveの重みを足す
 			atomicAdd(&(dL_dwave[global_id * 2 + 1]), dchannel_dcolor * part * tmp2); // ここにwaveの重みを足す
 
