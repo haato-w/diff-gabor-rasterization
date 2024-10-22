@@ -389,8 +389,8 @@ renderCUDA(
 			if (power > 0.0f)
 				continue;
 			// for easiness of visualization
-			if (rho >= 1.0)
-				continue;
+			// if (rho >= 1.0)
+			// 	continue;
 			
 			float dot_value = wave_vec.x * s.x + wave_vec.y * s.y;
 			const float PI = 3.14159265359;
@@ -401,20 +401,17 @@ renderCUDA(
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
 			// Avoid numerical instabilities (see paper appendix). 
-			float alpha = min(0.99f, opa * exp(power) * harmonic1);
-			float alpha2 = min(0.99f, opa * exp(power) * harmonic2);
-			if (alpha + alpha2 < 1.0f / 255.0f)
+			float alpha = min(0.99f, opa * exp(power)); // harmonic1 + harmonic2 = 1
+			if (alpha < 1.0f / 255.0f)
 				continue;
-			float test_T = T * (1 - alpha + alpha2);
+			float test_T = T * (1 - alpha);
 			if (test_T < 0.0001f)
 			{
 				done = true;
 				continue;
 			}
 
-			float w1 = alpha * T;
-			float w2 = alpha2 * T;
-			float w = w1 + w2;
+			float w = alpha * T;
 #if RENDER_AXUTILITY
 			// Render depth distortion map
 			// Efficient implementation of distortion loss, see 2DGS' paper appendix.
@@ -436,8 +433,9 @@ renderCUDA(
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++) {
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * w1;
-				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w2;
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * w * harmonic1;
+				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w * harmonic2;
+				// C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
 			}
 			T = test_T;
 
