@@ -271,9 +271,10 @@ renderCUDA(
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
-			for (int i = 0; i < C; i++)
+			for (int i = 0; i < C; i++) {
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
+			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 		}
 		block.sync();
@@ -339,6 +340,7 @@ renderCUDA(
 				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
 				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
 				const float c = harmonic1 * c1 + harmonic2 * c2;
+				// const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
@@ -350,6 +352,7 @@ renderCUDA(
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 + cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
 				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 - cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
+				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			// w vector gradient
 			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
