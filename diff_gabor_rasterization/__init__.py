@@ -221,7 +221,7 @@ class GaborRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, waves: torch.Tensor, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, waves, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
