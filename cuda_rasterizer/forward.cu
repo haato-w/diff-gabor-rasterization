@@ -114,6 +114,47 @@ __device__ void compute_transmat(
 
 }
 
+__device__ void compute_transmat2(
+	const float3& p_orig,
+	const glm::vec2 scale,
+	float mod,
+	const glm::vec4 rot,
+	const float* projmatrix,
+	const float* viewmatrix,
+	const int W,
+	const int H, 
+	glm::mat4 &T
+) {
+
+	glm::mat3 R = quat_to_rotmat(rot);
+	glm::mat3 S = scale_to_mat(scale, mod);
+	glm::mat3 L = R * S;
+
+	// center of Gaussians in the camera coordinate
+	glm::mat4x4 H_mat = glm::mat4(
+		glm::vec4(L[0], 0.0),
+		glm::vec4(L[1], 0.0),
+		glm::vec4(0.0, 0.0, 0.0, 0.0),
+		glm::vec4(p_orig.x, p_orig.y, p_orig.z, 1)
+	);
+
+	glm::mat4 world2ndc = glm::mat4(
+		projmatrix[0], projmatrix[4], projmatrix[8], projmatrix[12],
+		projmatrix[1], projmatrix[5], projmatrix[9], projmatrix[13],
+		projmatrix[2], projmatrix[6], projmatrix[10], projmatrix[14],
+		projmatrix[3], projmatrix[7], projmatrix[11], projmatrix[15]
+	);
+
+	glm::mat3x4 ndc2pix = glm::mat3x4(
+		glm::vec4(float(W) / 2.0, 0.0, 0.0, float(W-1) / 2.0),
+		glm::vec4(0.0, float(H) / 2.0, 0.0, float(H-1) / 2.0),
+		glm::vec4(0.0, 0.0, 0.0, 1.0)
+	);
+
+	T = glm::transpose(H_mat) * world2ndc * ndc2pix;
+	// normal = transformVec4x3({L[2].x, L[2].y, L[2].z}, viewmatrix);
+}
+
 // Computing the bounding box of the 2D Gaussian and its center
 // The center of the bounding box is used to create a low pass filter
 __device__ bool compute_aabb(
@@ -168,6 +209,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	int* radii,
 	float2* points_xy_image,
 	float2* wave,
+	float2* wave_vec_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -193,6 +235,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	
 	// Compute transformation matrix
 	glm::mat3 T;
+	glm::mat4 T2;
 	float3 normal;
 	if (transMat_precomp == nullptr)
 	{
@@ -201,6 +244,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		T_ptr[idx * 3 + 0] = {T[0][0], T[0][1], T[0][2]};
 		T_ptr[idx * 3 + 1] = {T[1][0], T[1][1], T[1][2]};
 		T_ptr[idx * 3 + 2] = {T[2][0], T[2][1], T[2][2]};
+
+		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, T2);
 	} else {
 		glm::vec3 *T_ptr = (glm::vec3*)transMat_precomp;
 		T = glm::mat3(
@@ -254,10 +299,20 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		rgb2[idx * C + 2] = result2.z;
 	} 
 
+	// Compute wave vector in pixel coordinate
+	glm::vec4 extended_wave_vec = glm::vec4(waves[idx], waves[idx + 1], 0.0, 1.0);
+	glm::vec4 wave_point_pix = T2 * extended_wave_vec;
+	glm::vec2 wave_point_vec_pix = glm::vec2(wave_point_pix[0] / wave_point_pix[3], wave_point_pix[1] / wave_point_pix[3]);
+	glm::vec2 wave_vec_pix = wave_point_vec_pix - glm::vec2(point_image.x, point_image.y);
+	float2 wave_in_pix;
+	wave_in_pix.x = wave_vec_pix[0];
+	wave_in_pix.y = wave_vec_pix[1];
+
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
 	wave[idx] = ((float2*)waves)[idx];
+	wave_vec_in_pix[idx] = wave_in_pix;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
@@ -528,6 +583,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	int* radii,
 	float2* means2D,
 	float2* wave,
+	float2* wave_vec_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -560,6 +616,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		radii,
 		means2D,
 		wave, 
+		wave_vec_in_pix, 
 		depths,
 		transMats,
 		rgb,
