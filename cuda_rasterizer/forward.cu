@@ -15,6 +15,8 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+#include <stdio.h>
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
@@ -123,7 +125,8 @@ __device__ void compute_transmat2(
 	const float* viewmatrix,
 	const int W,
 	const int H, 
-	glm::mat4 &T
+	glm::mat4 &T, 
+	glm::mat4 &world2pix_mat
 ) {
 
 	glm::mat3 R = quat_to_rotmat(rot);
@@ -152,6 +155,7 @@ __device__ void compute_transmat2(
 	);
 
 	T = glm::transpose(H_mat) * world2ndc * ndc2pix;
+	world2pix_mat = world2ndc * ndc2pix;
 	// normal = transformVec4x3({L[2].x, L[2].y, L[2].z}, viewmatrix);
 }
 
@@ -236,6 +240,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// Compute transformation matrix
 	glm::mat3 T;
 	glm::mat4 T2;
+	glm::mat4 world2pix_mat;
 	float3 normal;
 	if (transMat_precomp == nullptr)
 	{
@@ -245,7 +250,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		T_ptr[idx * 3 + 1] = {T[1][0], T[1][1], T[1][2]};
 		T_ptr[idx * 3 + 2] = {T[2][0], T[2][1], T[2][2]};
 
-		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, T2);
+		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, T2, world2pix_mat);
 	} else {
 		glm::vec3 *T_ptr = (glm::vec3*)transMat_precomp;
 		T = glm::mat3(
@@ -300,13 +305,25 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	} 
 
 	// Compute wave vector in pixel coordinate
-	glm::vec4 extended_wave_vec = glm::vec4(waves[idx], waves[idx + 1], 0.0, 1.0);
-	glm::vec4 wave_point_pix = T2 * extended_wave_vec;
-	glm::vec2 wave_point_vec_pix = glm::vec2(wave_point_pix[0] / wave_point_pix[3], wave_point_pix[1] / wave_point_pix[3]);
-	glm::vec2 wave_vec_pix = wave_point_vec_pix - glm::vec2(point_image.x, point_image.y);
+	float3 point = ((float3*)orig_points)[idx];
+	printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
+	glm::vec4 extended_mean_vec = glm::vec4(point.x, point.y, point.z, 1.0);
+	glm::vec4 extended_pix_mean = extended_mean_vec * world2pix_mat;
+	glm::vec3 pix_mean = glm::vec3(extended_pix_mean.x / extended_pix_mean.w, extended_pix_mean.y / extended_pix_mean.w, extended_pix_mean.z / extended_pix_mean.w);
+	printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
+
+	float2 wave_vec = ((float2*)waves)[idx];
+	printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
+	glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
+	glm::vec4 wave_point_pix = extended_wave_vec * T2;
+	glm::vec2 wave_point_vec_pix = glm::vec2(wave_point_pix.x / wave_point_pix.w, wave_point_pix.y / wave_point_pix.w);
+	glm::vec2 wave_vec_pix = wave_point_vec_pix - glm::vec2(pix_mean.x, pix_mean.y);
 	float2 wave_in_pix;
 	wave_in_pix.x = wave_vec_pix[0];
 	wave_in_pix.y = wave_vec_pix[1];
+	printf("wave_in_pix.x: %f, wave_in_pix.y: %f\n", wave_in_pix.x, wave_in_pix.y);
+
+	// frequencyに直す！！
 
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
