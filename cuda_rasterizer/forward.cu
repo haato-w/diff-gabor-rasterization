@@ -15,6 +15,8 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+#include <stdio.h>
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
@@ -358,7 +360,8 @@ renderCUDA(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
-	const float2* __restrict__ wave,
+	const float2* __restrict__ frequency,
+	const float* __restrict__ wave_length_in_pix,
 	const float* __restrict__ features,
 	const float* __restrict__ features2,
 	const float* __restrict__ transMats,
@@ -392,7 +395,8 @@ renderCUDA(
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float2 collected_wave[BLOCK_SIZE];
+	__shared__ float2 collected_frequency[BLOCK_SIZE];
+	__shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
@@ -433,7 +437,8 @@ renderCUDA(
 			int coll_id = point_list[range.x + progress];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_wave[block.thread_rank()] = wave[coll_id];
+			collected_frequency[block.thread_rank()] = frequency[coll_id];
+			collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
@@ -449,7 +454,8 @@ renderCUDA(
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
-			const float2 wave_vec = collected_wave[j];
+			const float2 frequency_vec = collected_frequency[j];
+			const float wave_length = collected_wave_length_in_pix[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
@@ -477,10 +483,12 @@ renderCUDA(
 			// if (rho >= 1.0)
 			// 	continue;
 			
-			float dot_value = wave_vec.x * s.x + wave_vec.y * s.y;
+			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			const float PI = 3.14159265359;
-			float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
-			float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
+			const float ANTI_ALIASE_MIN_THREASHOLD = 8.0;
+    		const float ANTI_ALIASE_MAX_THREASHOLD = 13.0;
+			float harmonic1 = ANTI_ALIASE_MIN_THREASHOLD < wave_length ? (1.0 + cos(2.0 * PI * dot_value)) / 2.0 : 0.5;
+			float harmonic2 = ANTI_ALIASE_MIN_THREASHOLD < wave_length ? (1.0 - cos(2.0 * PI * dot_value)) / 2.0 : 0.5;
 
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
@@ -560,7 +568,8 @@ void FORWARD::render(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* means2D,
-	const float2* wave,
+	const float2* frequency,
+	const float* wave_length_in_pix, 
 	const float* colors,
 	const float* colors2,
 	const float* transMats,
@@ -578,7 +587,8 @@ void FORWARD::render(
 		W, H,
 		focal_x, focal_y,
 		means2D,
-		wave, 
+		frequency, 
+		wave_length_in_pix, 
 		colors,
 		colors2,
 		transMats,

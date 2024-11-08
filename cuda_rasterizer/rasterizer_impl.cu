@@ -342,6 +342,7 @@ int CudaRasterizer::Rasterizer::forward(
 		focal_x, focal_y,
 		geomState.means2D,
 		geomState.frequency,
+		geomState.wave_length_in_pix, 
 		feature_ptr,
 		feature_ptr2,
 		transMat_ptr,
