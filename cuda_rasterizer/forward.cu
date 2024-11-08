@@ -15,9 +15,6 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
-#include <stdio.h>
-#include <glm/gtx/string_cast.hpp>
-
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
@@ -126,9 +123,9 @@ __device__ void compute_transmat2(
 	const float* viewmatrix,
 	const int W,
 	const int H, 
+	glm::mat4 &object2world_mat, 
 	glm::mat4 &world2ndc_mat, 
-	glm::mat4 &world2pix_mat,
-	glm::mat4 &object2pix_mat
+	glm::mat3x4 &ndc2pix_mat
 ) {
 
 	glm::mat3 R = quat_to_rotmat(rot);
@@ -150,16 +147,17 @@ __device__ void compute_transmat2(
 		projmatrix[3], projmatrix[7], projmatrix[11], projmatrix[15]
 	);
 
-	glm::mat4 ndc2pix = glm::mat4(
+	glm::mat3x4 ndc2pix = glm::mat3x4(
 		glm::vec4(float(W) / 2.0, 0.0, 0.0, float(W-1) / 2.0),
 		glm::vec4(0.0, float(H) / 2.0, 0.0, float(H-1) / 2.0),
-		glm::vec4(0.0, 0.0, 1.0, 0.0),
+		// glm::vec4(0.0, 0.0, 1.0, 0.0),
 		glm::vec4(0.0, 0.0, 0.0, 1.0)
 	);
 
+	object2world_mat = glm::transpose(H_mat);
 	world2ndc_mat = world2ndc;
-	world2pix_mat = world2ndc * ndc2pix;
-	object2pix_mat = ndc2pix * world2ndc * glm::transpose(H_mat);
+	ndc2pix_mat = ndc2pix;
+	// object2pix_mat = ndc2pix * world2ndc * glm::transpose(H_mat);
 }
 
 // Computing the bounding box of the 2D Gaussian and its center
@@ -216,7 +214,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	int* radii,
 	float2* points_xy_image,
 	float2* frequencies,
-	float2* wave_vec_in_pix,
+	float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -242,9 +240,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	
 	// Compute transformation matrix
 	glm::mat3 T;
+	glm::mat4 object2world_mat;
 	glm::mat4 world2ndc_mat;
-	glm::mat4 world2pix_mat;
-	glm::mat4 object2pix_mat;
+	glm::mat3x4 ndc2pix_mat;
 	float3 normal;
 	if (transMat_precomp == nullptr)
 	{
@@ -254,7 +252,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		T_ptr[idx * 3 + 1] = {T[1][0], T[1][1], T[1][2]};
 		T_ptr[idx * 3 + 2] = {T[2][0], T[2][1], T[2][2]};
 
-		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, world2ndc_mat, object2pix_mat, world2pix_mat);
+		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, object2world_mat, world2ndc_mat, ndc2pix_mat);
 	} else {
 		glm::vec3 *T_ptr = (glm::vec3*)transMat_precomp;
 		T = glm::mat3(
@@ -310,39 +308,41 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Compute wave vector in pixel coordinate
 	float3 point = ((float3*)orig_points)[idx];
-	printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
+	// printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
 	glm::vec4 extended_mean_vec = glm::vec4(point.x, point.y, point.z, 1.0);
-	glm::vec4 extended_ndc_mean = world2ndc_mat * extended_mean_vec;
-
-	printf("extended_ndc_mean.x: %f, extended_ndc_mean.y: %f, extended_ndc_mean.z: %f, extended_ndc_mean.w: %f\n", extended_ndc_mean.x, extended_ndc_mean.y, extended_ndc_mean.z, extended_ndc_mean.w);
-
-	glm::vec4 extended_pix_mean = world2pix_mat * extended_mean_vec;
-	glm::vec3 pix_mean = glm::vec3(extended_pix_mean.x / extended_pix_mean.w, extended_pix_mean.y / extended_pix_mean.w, extended_pix_mean.z / extended_pix_mean.w);
-	printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
-	// printf("extended_pix_mean.x: %f, extended_pix_mean.y: %f, extended_pix_mean.z: %f\n", extended_pix_mean.x, extended_pix_mean.y, extended_pix_mean.z);
+	// printf("extended_mean_vec.x: %f, extended_mean_vec.y: %f, extended_mean_vec.z: %f, extended_mean_vec.w: %f\n", extended_mean_vec.x, extended_mean_vec.y, extended_mean_vec.z, extended_mean_vec.w);
+	glm::vec4 extended_ndc_mean = glm::transpose(world2ndc_mat) * extended_mean_vec;
+	glm::vec3 ndc_mean_vec = glm::vec3(extended_ndc_mean.x / extended_ndc_mean.w, extended_ndc_mean.y / extended_ndc_mean.w, extended_ndc_mean.z / extended_ndc_mean.w);
+	// printf("ndc_mean_vec.x: %f, ndc_mean_vec.y: %f, ndc_mean_vec.z: %f\n", ndc_mean_vec.x, ndc_mean_vec.y, ndc_mean_vec.z);
+	glm::vec3 pix_mean = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_mean_vec, 1.0);
+	// printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
 
 	float2 wave_vec = ((float2*)waves)[idx];
-	printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
-	// glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
-	// glm::vec3 wave_point_pix = object2pix_mat * extended_wave_vec;
-	// glm::vec2 wave_point_vec_pix = glm::vec2(wave_point_pix.x / wave_point_pix.w, wave_point_pix.y / wave_point_pix.w);
-	// glm::vec2 wave_vec_pix = wave_point_vec_pix - glm::vec2(pix_mean.x, pix_mean.y);
-	float2 wave_in_pix;
-	// wave_in_pix.x = wave_vec_pix[0];
-	// wave_in_pix.y = wave_vec_pix[1];
-	// printf("wave_in_pix.x: %f, wave_in_pix.y: %f\n", wave_in_pix.x, wave_in_pix.y);
+	// printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
+	glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
+	glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
+	glm::vec3 world_wave_point = glm::vec3(extended_world_wave_point.x / extended_world_wave_point.w, extended_world_wave_point.y / extended_world_wave_point.w, extended_world_wave_point.z / extended_world_wave_point.w);
+	glm::vec4 extended_ndc_wave_point = glm::transpose(world2ndc_mat) * glm::vec4(world_wave_point, 1.0);
+	glm::vec3 ndc_wave_point = glm::vec3(extended_ndc_wave_point.x / extended_ndc_wave_point.w, extended_ndc_wave_point.y / extended_ndc_wave_point.w, extended_ndc_wave_point.z / extended_ndc_wave_point.w);
+	glm::vec3 pix_wave_point = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_wave_point, 1.0);
+	// printf("pix_wave_point.x: %f, pix_wave_point.y: %f, pix_wave_point.z: %f\n", pix_wave_point.x, pix_wave_point.y, pix_wave_point.z);
+
+	glm::vec3 pix_wave = pix_wave_point - pix_mean;
+	// printf("pix_wave.x: %f, pix_wave.y: %f\n", pix_wave.x, pix_wave.y);
+	float pix_wave_length = glm::length(pix_wave);
+	// printf("pix_wave_length: %f\n", pix_wave_length);
 
 	// converte wave to frequency (avoid 0 division)
 	float2 frequency_vec;
 	frequency_vec.x = wave_vec.x == 0.0 ? frequency_vec.x = 0.0 : frequency_vec.x = 1 / wave_vec.x;
 	frequency_vec.y = wave_vec.y == 0.0 ? frequency_vec.y = 0.0 : frequency_vec.y = 1 / wave_vec.y;
-	printf("frequency_vec.x: %f, frequency_vec.y: %f\n", frequency_vec.x, frequency_vec.y);
+	// printf("frequency_vec.x: %f, frequency_vec.y: %f\n", frequency_vec.x, frequency_vec.y);
 
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
 	frequencies[idx] = frequency_vec;
-	wave_vec_in_pix[idx] = wave_in_pix;
+	wave_length_in_pix[idx] = pix_wave_length;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
@@ -613,7 +613,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	int* radii,
 	float2* means2D,
 	float2* wave,
-	float2* wave_vec_in_pix,
+	float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -646,7 +646,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		radii,
 		means2D,
 		wave, 
-		wave_vec_in_pix, 
+		wave_length_in_pix, 
 		depths,
 		transMats,
 		rgb,

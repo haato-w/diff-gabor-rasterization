@@ -35,7 +35,7 @@ namespace CudaRasterizer
 		int* internal_radii;
 		float2* means2D;
 		float2* frequency;
-		float2* wave_in_pix;
+		float* wave_length_in_pix;
 		float* transMat;
 		float4* normal_opacity;
 		float* rgb;

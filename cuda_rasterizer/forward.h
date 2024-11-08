@@ -43,7 +43,7 @@ namespace FORWARD
 		int* radii,
 		float2* points_xy_image,
 		float2* wave,
-		float2* wave_vec_in_pix, 
+		float* wave_vec_in_pix, 
 		float* depths,
 		// float* isovals,
 		// float3* normals,
