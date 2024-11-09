@@ -59,6 +59,10 @@ __device__ const float SH_C3[] = {
 	-0.5900435899266435f
 };
 
+__device__ const float PI = 3.14159265359;
+__device__ const float ANTI_ALIASE_MIN_THREASHOLD = 5.0;
+__device__ const float ANTI_ALIASE_MAX_THREASHOLD = 7.0;
+
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
 	return ((v + 1.0) * S - 1.0) * 0.5;

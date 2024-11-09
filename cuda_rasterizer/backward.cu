@@ -331,7 +331,6 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
-			const float PI = 3.14159265359;
 			float dot_value = wave_vec.x * s.x + wave_vec.y * s.y;
 			const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
 			const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;

@@ -484,9 +484,6 @@ renderCUDA(
 			// 	continue;
 			
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
-			const float PI = 3.14159265359;
-			const float ANTI_ALIASE_MIN_THREASHOLD = 5.0;
-    		const float ANTI_ALIASE_MAX_THREASHOLD = 7.0;
     		const float THREASHOLD_RANGE = ANTI_ALIASE_MAX_THREASHOLD - ANTI_ALIASE_MIN_THREASHOLD;
 			float harmonic1;
 			float harmonic2;
