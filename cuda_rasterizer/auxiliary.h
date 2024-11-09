@@ -62,6 +62,7 @@ __device__ const float SH_C3[] = {
 __device__ const float PI = 3.14159265359;
 __device__ const float ANTI_ALIASE_MIN_THREASHOLD = 5.0;
 __device__ const float ANTI_ALIASE_MAX_THREASHOLD = 7.0;
+__device__ const float THREASHOLD_RANGE = ANTI_ALIASE_MAX_THREASHOLD - ANTI_ALIASE_MIN_THREASHOLD;
 
 __forceinline__ __device__ float ndc2Pix(float v, int S)
 {
