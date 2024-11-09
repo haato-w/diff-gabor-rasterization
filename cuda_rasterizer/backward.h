@@ -28,7 +28,8 @@ namespace BACKWARD
 		float focal_x, float focal_y,
 		const float* bg_color,
 		const float2* means2D,
-		const float2* waves,
+		const float2* frequencies,
+		const float* wave_length_in_pix,
 		const float4* normal_opacity,
 		const float* transMats,
 		const float* colors,
@@ -42,7 +43,7 @@ namespace BACKWARD
 		float3* dL_dmean2D,
 		float* dL_dnormal3D,
 		float* dL_dopacity,
-		float* dL_dwave,
+		float* dL_dfrequency,
 		float* dL_dcolors,
 		float* dL_dcolors2);
 

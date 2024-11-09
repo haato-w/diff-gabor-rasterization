@@ -115,11 +115,11 @@ class _RasterizeGabors(torch.autograd.Function):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
-        colors_precomp, colors_precomp2, means3D, waves, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+        colors_precomp, colors_precomp2, means3D, frequencies, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
         # for debug
         # print("in backward")
-        # print("waves: \n", waves)
+        # print("frequencies: \n", frequencies)
         # print("colors_precomp: \n", colors_precomp)
         # print("colors_precomp2: \n", colors_precomp2)
         # print("sh: \n", sh)
@@ -128,7 +128,7 @@ class _RasterizeGabors(torch.autograd.Function):
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
                 means3D, 
-                waves, 
+                frequencies, 
                 radii, 
                 colors_precomp, 
                 colors_precomp2, 
@@ -156,21 +156,21 @@ class _RasterizeGabors(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_waves, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_waves, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
 
-        # grad_waves = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
+        # grad_frequencies = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
         # grad_colors_precomp2 = torch.zeros(grad_colors_precomp.shape).float().cuda() # tmp
         # grad_sh2 = torch.zeros(grad_sh.shape).float().cuda() # tmp
 
         # for debug
         # print("out backward")
-        # print("grad_waves: \n", grad_waves)
+        # print("grad_frequencies: \n", grad_frequencies)
         # print("grad_colors_precomp2: \n", grad_colors_precomp2)
         # print("grad_sh2: \n", grad_sh2)
 
@@ -182,7 +182,7 @@ class _RasterizeGabors(torch.autograd.Function):
             grad_colors_precomp,
             grad_colors_precomp2,
             grad_opacities,
-            grad_waves, 
+            grad_frequencies, 
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,

@@ -149,7 +149,8 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
-	const float2* __restrict__ waves,
+	const float2* __restrict__ frequencies,
+	const float* __restrict__ wave_length_in_pix,
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
@@ -163,7 +164,7 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dwave,
+	float* __restrict__ dL_dfrequency,
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2)
 {
@@ -186,7 +187,8 @@ renderCUDA(
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float2 collected_wave[BLOCK_SIZE];
+	__shared__ float2 collected_frequency[BLOCK_SIZE];
+	__shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
@@ -266,7 +268,8 @@ renderCUDA(
 			const int coll_id = point_list[range.y - progress - 1];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_wave[block.thread_rank()] = waves[coll_id];
+			collected_frequency[block.thread_rank()] = frequencies[coll_id];
+			collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
@@ -291,7 +294,8 @@ renderCUDA(
 			// compute ray-splat intersection as before
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
-			const float2 wave_vec = collected_wave[j];
+			const float2 frequency_vec = collected_frequency[j];
+			const float wave_length = collected_wave_length_in_pix[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
@@ -331,7 +335,7 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
-			float dot_value = wave_vec.x * s.x + wave_vec.y * s.y;
+			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
 			const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
 			for (int ch = 0; ch < C; ch++)
@@ -349,8 +353,8 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 + cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
-				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 - cos(2 * PI  * dot_value)) / 2); // ここにwaveの重みを足す
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 + cos(2 * PI  * dot_value)) / 2); // ここにfrequencyの重みを足す
+				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * (1 - cos(2 * PI  * dot_value)) / 2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			// w vector gradient
@@ -363,8 +367,8 @@ renderCUDA(
 			const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
 			const float tmp1 = PI * s.x * sin(2 * PI * dot_value);
 			const float tmp2 = PI * s.y * sin(2 * PI * dot_value);
-			atomicAdd(&(dL_dwave[global_id * 2]), dchannel_dcolor * part * tmp1); // ここにwaveの重みを足す
-			atomicAdd(&(dL_dwave[global_id * 2 + 1]), dchannel_dcolor * part * tmp2); // ここにwaveの重みを足す
+			atomicAdd(&(dL_dfrequency[global_id * 2]), dchannel_dcolor * part * tmp1); // ここにfrequencyの重みを足す
+			atomicAdd(&(dL_dfrequency[global_id * 2 + 1]), dchannel_dcolor * part * tmp2); // ここにfrequencyの重みを足す
 
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
@@ -731,7 +735,8 @@ void BACKWARD::render(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
-	const float2* waves,
+	const float2* frequencies,
+	const float* wave_length_in_pix,
 	const float4* normal_opacity,
 	const float* colors,
 	const float* colors2,
@@ -745,7 +750,7 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dwave,
+	float* dL_dfrequency,
 	float* dL_dcolors,
 	float* dL_dcolors2)
 {
@@ -756,7 +761,8 @@ void BACKWARD::render(
 		focal_x, focal_y,
 		bg_color,
 		means2D,
-		waves, 
+		frequencies, 
+		wave_length_in_pix, 
 		normal_opacity,
 		transMats,
 		colors,
@@ -770,7 +776,7 @@ void BACKWARD::render(
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dwave,
+		dL_dfrequency,
 		dL_dcolors,
 		dL_dcolors2
 		);

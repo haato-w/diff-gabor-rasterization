@@ -146,7 +146,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
  RasterizeGaborsBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& waves,
+	const torch::Tensor& frequencies,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -173,7 +173,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
-  CHECK_INPUT(waves);
+  CHECK_INPUT(frequencies);
   CHECK_INPUT(radii);
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
@@ -205,7 +205,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dcolors2 = torch::zeros({P, NUM_CHANNELS}, means3D.options());
   torch::Tensor dL_dnormal = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
-  torch::Tensor dL_dwave = torch::zeros({P, 2}, means3D.options());
+  torch::Tensor dL_dfrequency = torch::zeros({P, 2}, means3D.options());
   torch::Tensor dL_dtransMat = torch::zeros({P, 9}, means3D.options());
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dsh2 = torch::zeros({P, M, 3}, means3D.options());
@@ -218,7 +218,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  background.contiguous().data<float>(),
 	  W, H, 
 	  means3D.contiguous().data<float>(),
-	  waves.contiguous().data<float>(),
+	  frequencies.contiguous().data<float>(),
 	  sh.contiguous().data<float>(),
 	  sh2.contiguous().data<float>(),
 	  colors.contiguous().data<float>(),
@@ -241,7 +241,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dmeans2D.contiguous().data<float>(),
 	  dL_dnormal.contiguous().data<float>(),  
 	  dL_dopacity.contiguous().data<float>(),
-	  dL_dwave.contiguous().data<float>(),
+	  dL_dfrequency.contiguous().data<float>(),
 	  dL_dcolors.contiguous().data<float>(),
 	  dL_dcolors2.contiguous().data<float>(),
 	  dL_dmeans3D.contiguous().data<float>(),
@@ -253,7 +253,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dwave, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dfrequency, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations);
 }
 
 torch::Tensor markVisible(
