@@ -486,17 +486,20 @@ renderCUDA(
     		const float THREASHOLD_RANGE = ANTI_ALIASE_MAX_THREASHOLD - ANTI_ALIASE_MIN_THREASHOLD;
 			float harmonic1;
 			float harmonic2;
-			if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-				harmonic1 = 0.5;
-				harmonic2 = 0.5;
-			} else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
-				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			} else {
-				const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-    			harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			}
+			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
+			// 	harmonic1 = 0.5;
+			// 	harmonic2 = 0.5;
+			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
+			// 	harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			// 	harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			// } else {
+			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
+    		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			// 	harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			// }
+
+			harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
 
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
