@@ -206,7 +206,7 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
-	const float* waves,
+	const float* frequencies,
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -255,7 +255,7 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
-		waves, 
+		frequencies, 
 		(glm::vec2*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,

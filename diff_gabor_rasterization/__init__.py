@@ -26,7 +26,7 @@ def rasterize_gabors(
     colors_precomp,
     colors_precomp2,
     opacities,
-    waves, 
+    frequencies, 
     scales,
     rotations,
     cov3Ds_precomp,
@@ -40,7 +40,7 @@ def rasterize_gabors(
         colors_precomp,
         colors_precomp2,
         opacities,
-        waves, 
+        frequencies, 
         scales,
         rotations,
         cov3Ds_precomp,
@@ -58,7 +58,7 @@ class _RasterizeGabors(torch.autograd.Function):
         colors_precomp,
         colors_precomp2,
         opacities,
-        waves, 
+        frequencies, 
         scales,
         rotations,
         cov3Ds_precomp,
@@ -69,7 +69,7 @@ class _RasterizeGabors(torch.autograd.Function):
         args = (
             raster_settings.bg, 
             means3D,
-            waves, 
+            frequencies, 
             colors_precomp,
             colors_precomp2,
             opacities,
@@ -106,7 +106,7 @@ class _RasterizeGabors(torch.autograd.Function):
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
-        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, waves, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer)
+        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, frequencies, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer)
         return color, radii, depth
 
     @staticmethod
@@ -221,7 +221,7 @@ class GaborRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, waves, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, frequencies, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
@@ -255,7 +255,7 @@ class GaborRasterizer(nn.Module):
             colors_precomp,
             colors_precomp2,
             opacities,
-            waves, 
+            frequencies, 
             scales, 
             rotations,
             cov3D_precomp,

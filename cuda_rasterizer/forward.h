@@ -42,7 +42,7 @@ namespace FORWARD
 		const float tan_fovx, float tan_fovy,
 		int* radii,
 		float2* points_xy_image,
-		float2* wave,
+		float2* geo_frequencies,
 		float* wave_vec_in_pix, 
 		float* depths,
 		// float* isovals,

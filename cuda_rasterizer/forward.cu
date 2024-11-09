@@ -196,7 +196,7 @@ __device__ bool compute_aabb(
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
-	const float* waves,
+	const float* frequencies,
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -215,7 +215,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	float2* frequencies,
+	float2* geo_frequencies,
 	float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
@@ -319,7 +319,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	glm::vec3 pix_mean = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_mean_vec, 1.0);
 	// printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
 
-	float2 wave_vec = ((float2*)waves)[idx];
+	// converte frequency to wave (avoid 0 division)
+	float2 frequency_vec = ((float2*)frequencies)[idx];
+	float2 wave_vec;
+	wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : 1 / frequency_vec.x;
+	wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : 1 / frequency_vec.y;
+
 	// printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
 	glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
 	glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
@@ -334,16 +339,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float pix_wave_length = glm::length(pix_wave);
 	// printf("pix_wave_length: %f\n", pix_wave_length);
 
-	// converte wave to frequency (avoid 0 division)
-	float2 frequency_vec;
-	frequency_vec.x = wave_vec.x == 0.0 ? frequency_vec.x = 0.0 : frequency_vec.x = 1 / wave_vec.x;
-	frequency_vec.y = wave_vec.y == 0.0 ? frequency_vec.y = 0.0 : frequency_vec.y = 1 / wave_vec.y;
-	// printf("frequency_vec.x: %f, frequency_vec.y: %f\n", frequency_vec.x, frequency_vec.y);
-
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
-	frequencies[idx] = frequency_vec;
+	geo_frequencies[idx] = frequency_vec;
 	wave_length_in_pix[idx] = pix_wave_length;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
@@ -612,7 +611,7 @@ void FORWARD::render(
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
-	const float* waves,
+	const float* frequencies,
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -631,7 +630,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, const float tan_fovy,
 	int* radii,
 	float2* means2D,
-	float2* wave,
+	float2* geo_frequencies,
 	float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
@@ -645,7 +644,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
-		waves, 
+		frequencies, 
 		scales,
 		scale_modifier,
 		rotations,
@@ -664,7 +663,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
-		wave, 
+		geo_frequencies, 
 		wave_length_in_pix, 
 		depths,
 		transMats,

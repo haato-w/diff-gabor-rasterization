@@ -40,7 +40,7 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torc
 RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& waves,
+	const torch::Tensor& frequencies,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -72,7 +72,7 @@ RasterizeGaborsCUDA(
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
-  CHECK_INPUT(waves);
+  CHECK_INPUT(frequencies);
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
   CHECK_INPUT(opacity);
@@ -118,7 +118,7 @@ RasterizeGaborsCUDA(
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
-		waves.contiguous().data<float>(),
+		frequencies.contiguous().data<float>(),
 		sh.contiguous().data_ptr<float>(),
 		sh2.contiguous().data_ptr<float>(),
 		colors.contiguous().data<float>(), 
