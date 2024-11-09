@@ -485,10 +485,22 @@ renderCUDA(
 			
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			const float PI = 3.14159265359;
-			const float ANTI_ALIASE_MIN_THREASHOLD = 8.0;
-    		const float ANTI_ALIASE_MAX_THREASHOLD = 13.0;
-			float harmonic1 = ANTI_ALIASE_MIN_THREASHOLD < wave_length ? (1.0 + cos(2.0 * PI * dot_value)) / 2.0 : 0.5;
-			float harmonic2 = ANTI_ALIASE_MIN_THREASHOLD < wave_length ? (1.0 - cos(2.0 * PI * dot_value)) / 2.0 : 0.5;
+			const float ANTI_ALIASE_MIN_THREASHOLD = 5.0;
+    		const float ANTI_ALIASE_MAX_THREASHOLD = 7.0;
+    		const float THREASHOLD_RANGE = ANTI_ALIASE_MAX_THREASHOLD - ANTI_ALIASE_MIN_THREASHOLD;
+			float harmonic1;
+			float harmonic2;
+			if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
+				harmonic1 = 0.5;
+				harmonic2 = 0.5;
+			} else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
+				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			} else {
+				const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
+    			harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+				harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			}
 
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
