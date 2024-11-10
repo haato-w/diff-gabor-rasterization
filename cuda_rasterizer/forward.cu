@@ -322,10 +322,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// converte frequency to wave (avoid 0 division)
 	float2 frequency_vec = ((float2*)frequencies)[idx];
 	float2 wave_vec;
-	wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : 1 / frequency_vec.x;
-	wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : 1 / frequency_vec.y;
-
+	const float frequency_length2 = (frequency_vec.x * frequency_vec.x + frequency_vec.y * frequency_vec.y);
+	wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : frequency_vec.x / frequency_length2;
+	wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : frequency_vec.y / frequency_length2;
 	// printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
+
 	glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
 	glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
 	glm::vec3 world_wave_point = glm::vec3(extended_world_wave_point.x / extended_world_wave_point.w, extended_world_wave_point.y / extended_world_wave_point.w, extended_world_wave_point.z / extended_world_wave_point.w);
@@ -335,8 +336,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// printf("pix_wave_point.x: %f, pix_wave_point.y: %f, pix_wave_point.z: %f\n", pix_wave_point.x, pix_wave_point.y, pix_wave_point.z);
 
 	glm::vec3 pix_wave = pix_wave_point - pix_mean;
-	// printf("pix_wave.x: %f, pix_wave.y: %f\n", pix_wave.x, pix_wave.y);
-	float pix_wave_length = glm::length(pix_wave);
+	// printf("pix_wave.x: %f, pix_wave.y: %f, pix_wave.z: %f\n", pix_wave.x, pix_wave.y, pix_wave.z);
+	float pix_wave_length = sqrt(pix_wave.x * pix_wave.x + pix_wave.y * pix_wave.y);
 	// printf("pix_wave_length: %f\n", pix_wave_length);
 
 	depths[idx] = p_view.z;
