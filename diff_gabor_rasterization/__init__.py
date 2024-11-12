@@ -117,6 +117,8 @@ class _RasterizeGabors(torch.autograd.Function):
         raster_settings = ctx.raster_settings
         colors_precomp, colors_precomp2, means3D, frequencies, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
+        # print("frequencies: \n", frequencies)
+
         # for debug
         # print("in backward")
         # print("frequencies: \n", frequencies)
@@ -174,6 +176,21 @@ class _RasterizeGabors(torch.autograd.Function):
         # print("grad_colors_precomp2: \n", grad_colors_precomp2)
         # print("grad_sh2: \n", grad_sh2)
 
+        # grads = (
+        #     torch.zeros_like(grad_means3D),
+        #     torch.zeros_like(grad_means2D),
+        #     torch.zeros_like(grad_sh),
+        #     torch.zeros_like(grad_sh2),
+        #     torch.zeros_like(grad_colors_precomp),
+        #     torch.zeros_like(grad_colors_precomp2),
+        #     torch.zeros_like(grad_opacities),
+        #     grad_frequencies, 
+        #     torch.zeros_like(grad_scales),
+        #     torch.zeros_like(grad_rotations),
+        #     torch.zeros_like(grad_cov3Ds_precomp),
+        #     None,
+        # )
+
         grads = (
             grad_means3D,
             grad_means2D,
@@ -228,14 +245,19 @@ class GaborRasterizer(nn.Module):
         if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
             raise Exception('Please provide excatly one of either SHs or precomputed colors!')
         
+        if (shs2 is None and colors_precomp2 is None) or (shs2 is not None and colors_precomp2 is not None):
+            raise Exception('Please provide excatly one of either SHs or precomputed colors!')
+        
         if ((scales is None or rotations is None) and cov3D_precomp is None) or ((scales is not None or rotations is not None) and cov3D_precomp is not None):
             raise Exception('Please provide exactly one of either scale/rotation pair or precomputed 3D covariance!')
         
         if shs is None:
             shs = torch.Tensor([]).cuda()
+        if shs2 is None:
             shs2 = torch.Tensor([]).cuda()
         if colors_precomp is None:
             colors_precomp = torch.Tensor([]).cuda()
+        if colors_precomp2 is None:
             colors_precomp2 = torch.Tensor([]).cuda()
 
         if scales is None:
