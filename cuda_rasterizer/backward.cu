@@ -340,17 +340,17 @@ renderCUDA(
 			// const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
 			float harmonic1;
 			float harmonic2;
-			if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-				harmonic1 = 0.5;
-				harmonic2 = 0.5;
-			} else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
+			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
+			// 	harmonic1 = 0.5;
+			// 	harmonic2 = 0.5;
+			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
 				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			} else {
-				const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-    			harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			}
+			// } else {
+			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
+    		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			// 	harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			// }
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
