@@ -329,7 +329,7 @@ renderCUDA(
 
 			T = T / (1.f - alpha);
 			const float dchannel_dcolor = alpha * T;
-			const float w = alpha * T;
+			// const float w = alpha * T;
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
@@ -339,13 +339,13 @@ renderCUDA(
 			// const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
 			// const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
 			float harmonic1;
-			float harmonic2;
+			// float harmonic2;
 			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
 			// 	harmonic1 = 0.5;
 			// 	harmonic2 = 0.5;
 			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+				// harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
 			// } else {
 			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
     		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
@@ -354,8 +354,9 @@ renderCUDA(
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
-				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
-				const float c = harmonic1 * c1 + harmonic2 * c2;
+				// const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
+				// const float c = harmonic1 * c1 + harmonic2 * c2;
+				const float c = harmonic1 * c1;
 				// const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
@@ -367,34 +368,35 @@ renderCUDA(
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic1); // ここにfrequencyの重みを足す
-				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
+				// atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			// frequency vector gradient
 			float dL_dw1;
 			float dL_dw2;
-			if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-				dL_dw1 = 0;
-				dL_dw2 = 0;
-			} else  {
+			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
+			// 	dL_dw1 = 0;
+			// 	dL_dw2 = 0;
+			// } else  {
 				const float r0 = collected_colors[0 * BLOCK_SIZE + j];
 				const float g0 = collected_colors[1 * BLOCK_SIZE + j];
 				const float b0 = collected_colors[2 * BLOCK_SIZE + j];
-				const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
-				const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
-				const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
-				const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
-				const float tmp1 = PI * s.x * sin(2.0 * PI * dot_value);
-				const float tmp2 = PI * s.y * sin(2.0 * PI * dot_value);
-				if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
+				// const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+				// const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+				// const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+				// const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
+				const float part = dL_dpixel[0] * r0 + dL_dpixel[1] * g0 + dL_dpixel[2] * b0;
+				const float tmp1 = -PI * s.x * sin(2.0 * PI * dot_value);
+				const float tmp2 = -PI * s.y * sin(2.0 * PI * dot_value);
+				// if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 					dL_dw1 = part * tmp1;
 					dL_dw2 = part * tmp2;
-				} else {
-					const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-					dL_dw1 = interp_factor * part * tmp1;
-					dL_dw2 = interp_factor * part * tmp2;
-				}
-			}
+				// } else {
+				// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
+				// 	dL_dw1 = interp_factor * part * tmp1;
+				// 	dL_dw2 = interp_factor * part * tmp2;
+				// }
+			// }
 
 			atomicAdd(&(dL_dfrequency[global_id * 2]), dchannel_dcolor * dL_dw1); // ここにfrequencyの重みを足す
 			atomicAdd(&(dL_dfrequency[global_id * 2 + 1]), dchannel_dcolor * dL_dw2); // ここにfrequencyの重みを足す

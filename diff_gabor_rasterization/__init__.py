@@ -191,6 +191,21 @@ class _RasterizeGabors(torch.autograd.Function):
         #     None,
         # )
 
+        grads = (
+            torch.zeros_like(grad_means3D),
+            torch.zeros_like(grad_means2D),
+            torch.zeros_like(grad_sh),
+            torch.zeros_like(grad_sh2),
+            torch.zeros_like(grad_colors_precomp),
+            torch.zeros_like(grad_colors_precomp2),
+            torch.zeros_like(grad_opacities),
+            grad_frequencies, 
+            torch.zeros_like(grad_scales),
+            torch.zeros_like(grad_rotations),
+            torch.zeros_like(grad_cov3Ds_precomp),
+            None,
+        )
+
         # grads = (
         #     grad_means3D,
         #     grad_means2D,
@@ -198,28 +213,13 @@ class _RasterizeGabors(torch.autograd.Function):
         #     grad_sh2,
         #     grad_colors_precomp,
         #     grad_colors_precomp2,
-        #     torch.zeros_like(grad_opacities),
+        #     grad_opacities,
         #     grad_frequencies, 
-        #     torch.zeros_like(grad_scales),
+        #     grad_scales,
         #     grad_rotations,
         #     grad_cov3Ds_precomp,
         #     None,
         # )
-
-        grads = (
-            grad_means3D,
-            grad_means2D,
-            grad_sh,
-            grad_sh2,
-            grad_colors_precomp,
-            grad_colors_precomp2,
-            grad_opacities,
-            grad_frequencies, 
-            grad_scales,
-            grad_rotations,
-            grad_cov3Ds_precomp,
-            None,
-        )
 
         return grads
 

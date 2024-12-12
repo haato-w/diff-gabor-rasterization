@@ -483,13 +483,13 @@ renderCUDA(
 			
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			float harmonic1;
-			float harmonic2;
+			// float harmonic2;
 			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
 			// 	harmonic1 = 0.5;
 			// 	harmonic2 = 0.5;
 			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+				// harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
 			// } else {
 			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
     		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
@@ -533,7 +533,7 @@ renderCUDA(
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++) {
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * w * harmonic1;
-				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w * harmonic2;
+				// C[ch] += features2[collected_id[j] * CHANNELS + ch] * w * harmonic2;
 				// C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
 			}
 			T = test_T;
