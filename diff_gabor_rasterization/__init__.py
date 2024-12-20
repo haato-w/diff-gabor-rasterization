@@ -14,6 +14,9 @@ import torch.nn as nn
 import torch
 from . import _C
 
+import numpy as np
+from matplotlib import pyplot as plt
+
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
     return tuple(copied_tensors)
@@ -64,6 +67,14 @@ class _RasterizeGabors(torch.autograd.Function):
         cov3Ds_precomp,
         raster_settings,
     ):
+        
+        print("means3D: ", means3D)
+        print("frequencies: ", frequencies)
+        print("colors_precomp: ", colors_precomp)
+        print("colors_precomp2: ", colors_precomp2)
+        print("opacities: ", opacities)
+        print("scales: ", scales)
+        print("rotations: ", rotations)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
@@ -158,13 +169,35 @@ class _RasterizeGabors(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations = _C.rasterize_gabors_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+
+        print("d_image.shape: ", d_image.shape)
+        save_image = d_image.clone().detach()
+        save_image = save_image.permute(1, 2, 0)
+        save_image = save_image.squeeze(-1)
+
+        print("save_image.shape: ", save_image.shape)
+
+        # save_image = save_image.clamp(max=1.0, min=0.0)
+        img = save_image.cpu().numpy()
+
+        max_ = 50
+        img = (img + max_) / (2 * max_)
+        img = np.clip(img, a_min = 0, a_max = 1)
+
+        # import matplotlib 
+        # img = matplotlib.colormaps['seismic'](img)[..., :3]
+        # plt.clf()
+        # plt.imshow(img)
+        # plt.savefig("d_image.png")
+
+        plt.imsave("d_image.png", img)
 
         # grad_frequencies = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
         # grad_colors_precomp2 = torch.zeros(grad_colors_precomp.shape).float().cuda() # tmp

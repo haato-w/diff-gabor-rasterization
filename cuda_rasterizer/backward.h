@@ -17,6 +17,7 @@
 #include "device_launch_parameters.h"
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
 namespace BACKWARD
 {
@@ -72,7 +73,8 @@ namespace BACKWARD
 		float* dL_dsh2,
 		glm::vec3* dL_dmeans,
 		glm::vec2* dL_dscale,
-		glm::vec4* dL_drot);
+		glm::vec4* dL_drot, 
+		float* d_image);
 }
 
 #endif

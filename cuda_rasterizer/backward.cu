@@ -339,13 +339,13 @@ renderCUDA(
 			// const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
 			// const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
 			float harmonic1;
-			// float harmonic2;
+			float harmonic2;
 			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
 			// 	harmonic1 = 0.5;
 			// 	harmonic2 = 0.5;
 			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				// harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
 			// } else {
 			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
     		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
@@ -354,9 +354,9 @@ renderCUDA(
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
-				// const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
-				// const float c = harmonic1 * c1 + harmonic2 * c2;
-				const float c = harmonic1 * c1;
+				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
+				const float c = harmonic1 * c1 + harmonic2 * c2;
+				// const float c = harmonic1 * c1;
 				// const float c = collected_colors[ch * BLOCK_SIZE + j];
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
@@ -368,7 +368,7 @@ renderCUDA(
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic1); // ここにfrequencyの重みを足す
-				// atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
+				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 			}
 			// frequency vector gradient
@@ -519,7 +519,9 @@ __device__ void compute_transmat_aabb(
 	float* dL_dTs, 
 	glm::vec3* dL_dmeans, 
 	glm::vec2* dL_dscales,
-	 glm::vec4* dL_drots)
+	glm::vec4* dL_drots, 
+	float* d_image, 
+	uint32_t pix_id)
 {
 	glm::mat3 T;
 	float3 normal;
@@ -635,6 +637,8 @@ __device__ void compute_transmat_aabb(
 		(float)glm::dot(dL_dRS[1], R[1])
 	);
 	dL_dmeans[idx] = glm::vec3(dL_dM[2]);
+
+	d_image[H * W + pix_id] = glm::vec3(dL_dM[2]).x;
 }
 
 template<int C>
@@ -666,7 +670,8 @@ __global__ void preprocessCUDA(
 	float3* dL_dmean2Ds,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots, 
+	float* d_image)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0))
@@ -675,6 +680,16 @@ __global__ void preprocessCUDA(
 	const int W = int(focal_x * tan_fovx * 2);
 	const int H = int(focal_y * tan_fovy * 2);
 	const float * Ts_precomp = (scales) ? nullptr : transMats;
+
+	// float tmp[3];
+
+	auto block = cg::this_thread_block();
+	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
+	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	uint32_t pix_id = W * pix.y + pix.x;
+
 	compute_transmat_aabb(
 		idx, 
 		Ts_precomp,
@@ -685,7 +700,9 @@ __global__ void preprocessCUDA(
 		(dL_dtransMats), 
 		dL_dmean3Ds, 
 		dL_dscales, 
-		dL_drots
+		dL_drots, 
+		d_image, 
+		pix_id
 	);
 
 	if (shs)
@@ -725,7 +742,8 @@ void BACKWARD::preprocess(
 	float* dL_dshs2,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots, 
+	float* d_image)
 {	
 	preprocessCUDA<NUM_CHANNELS><< <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -754,7 +772,8 @@ void BACKWARD::preprocess(
 		dL_dmean2Ds,
 		dL_dmean3Ds,
 		dL_dscales,
-		dL_drots
+		dL_drots, 
+		d_image
 	);
 }
 
