@@ -15,6 +15,8 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+#include <stdio.h>
+
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
@@ -166,7 +168,8 @@ renderCUDA(
 	float* __restrict__ dL_dopacity,
 	float* __restrict__ dL_dfrequency,
 	float* __restrict__ dL_dcolors,
-	float* __restrict__ dL_dcolors2)
+	float* __restrict__ dL_dcolors2, 
+	float* d_image)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -370,6 +373,10 @@ renderCUDA(
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic1); // ここにfrequencyの重みを足す
 				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+				
+				if (ch == 0) {
+					d_image[pix_id] += dchannel_dcolor * dL_dchannel * harmonic1;
+				}
 			}
 			// frequency vector gradient
 			float dL_dw1;
@@ -519,9 +526,7 @@ __device__ void compute_transmat_aabb(
 	float* dL_dTs, 
 	glm::vec3* dL_dmeans, 
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots, 
-	float* d_image, 
-	uint32_t pix_id)
+	glm::vec4* dL_drots)
 {
 	glm::mat3 T;
 	float3 normal;
@@ -637,8 +642,6 @@ __device__ void compute_transmat_aabb(
 		(float)glm::dot(dL_dRS[1], R[1])
 	);
 	dL_dmeans[idx] = glm::vec3(dL_dM[2]);
-
-	d_image[H * W + pix_id] = glm::vec3(dL_dM[2]).x;
 }
 
 template<int C>
@@ -670,8 +673,8 @@ __global__ void preprocessCUDA(
 	float3* dL_dmean2Ds,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots, 
-	float* d_image)
+	glm::vec4* dL_drots
+	)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P || !(radii[idx] > 0))
@@ -680,15 +683,6 @@ __global__ void preprocessCUDA(
 	const int W = int(focal_x * tan_fovx * 2);
 	const int H = int(focal_y * tan_fovy * 2);
 	const float * Ts_precomp = (scales) ? nullptr : transMats;
-
-	// float tmp[3];
-
-	auto block = cg::this_thread_block();
-	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
-	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
-	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	const uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
-	uint32_t pix_id = W * pix.y + pix.x;
 
 	compute_transmat_aabb(
 		idx, 
@@ -700,9 +694,7 @@ __global__ void preprocessCUDA(
 		(dL_dtransMats), 
 		dL_dmean3Ds, 
 		dL_dscales, 
-		dL_drots, 
-		d_image, 
-		pix_id
+		dL_drots
 	);
 
 	if (shs)
@@ -742,8 +734,7 @@ void BACKWARD::preprocess(
 	float* dL_dshs2,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots, 
-	float* d_image)
+	glm::vec4* dL_drots)
 {	
 	preprocessCUDA<NUM_CHANNELS><< <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -772,8 +763,7 @@ void BACKWARD::preprocess(
 		dL_dmean2Ds,
 		dL_dmean3Ds,
 		dL_dscales,
-		dL_drots, 
-		d_image
+		dL_drots
 	);
 }
 
@@ -802,7 +792,8 @@ void BACKWARD::render(
 	float* dL_dopacity,
 	float* dL_dfrequency,
 	float* dL_dcolors,
-	float* dL_dcolors2)
+	float* dL_dcolors2, 
+	float* d_image)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
@@ -828,6 +819,7 @@ void BACKWARD::render(
 		dL_dopacity,
 		dL_dfrequency,
 		dL_dcolors,
-		dL_dcolors2
+		dL_dcolors2, 
+		d_image
 		);
 }

@@ -181,18 +181,19 @@ class _RasterizeGabors(torch.autograd.Function):
         save_image = d_image.clone().detach()
         save_image = save_image.permute(1, 2, 0)
         save_image = save_image.squeeze(-1)
-
+        # save_image = save_image * 1000000
         print("save_image.shape: ", save_image.shape)
 
         # save_image = save_image.clamp(max=1.0, min=0.0)
+        print("save_image: \n", save_image[200:300, 200:300])
         img = save_image.cpu().numpy()
 
-        max_ = 50
+        max_ = 100
         img = (img + max_) / (2 * max_)
         img = np.clip(img, a_min = 0, a_max = 1)
 
-        # import matplotlib 
-        # img = matplotlib.colormaps['seismic'](img)[..., :3]
+        import matplotlib 
+        img = matplotlib.colormaps['seismic'](img)[..., :3]
         # plt.clf()
         # plt.imshow(img)
         # plt.savefig("d_image.png")

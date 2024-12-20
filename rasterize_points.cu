@@ -212,7 +212,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dscales = torch::zeros({P, 2}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
 
-auto float_opts = means3D.options().dtype(torch::kFloat32);
+	auto float_opts = means3D.options().dtype(torch::kFloat32);
   torch::Tensor d_image = torch::full({1, H, W}, 0.0, float_opts);
   
   if(P != 0)
