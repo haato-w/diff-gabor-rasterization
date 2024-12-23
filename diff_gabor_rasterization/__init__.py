@@ -188,7 +188,7 @@ class _RasterizeGabors(torch.autograd.Function):
         print("save_image: \n", save_image[200:300, 200:300])
         img = save_image.cpu().numpy()
 
-        max_ = 100
+        max_ = 10
         img = (img + max_) / (2 * max_)
         img = np.clip(img, a_min = 0, a_max = 1)
 

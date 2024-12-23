@@ -373,10 +373,10 @@ renderCUDA(
 				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic1); // ここにfrequencyの重みを足す
 				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
-				
-				if (ch == 0) {
-					d_image[pix_id] += dchannel_dcolor * dL_dchannel * harmonic1;
-				}
+
+				// if (ch == 2) {
+				// 	d_image[pix_id] += dchannel_dcolor * dL_dchannel * harmonic1;
+				// }
 			}
 			// frequency vector gradient
 			float dL_dw1;
@@ -507,6 +507,7 @@ renderCUDA(
 
 			// Update gradients w.r.t. opacity of the Gaussian
 			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
+			d_image[pix_id] += G * dL_dalpha;
 		}
 	}
 }
