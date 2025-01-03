@@ -332,11 +332,12 @@ renderCUDA(
 
 			T = T / (1.f - alpha);
 			const float dchannel_dcolor = alpha * T;
-			// const float w = alpha * T;
+			const float w = alpha * T;
 			// Propagate gradients to per-Gaussian colors and keep
 			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
 			// pair).
 			float dL_dalpha = 0.0f;
+			float dL_dtmp = 0.0f;
 			const int global_id = collected_id[j];
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			// const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
@@ -367,6 +368,9 @@ renderCUDA(
 
 				const float dL_dchannel = dL_dpixel[ch];
 				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
+
+				dL_dtmp += w * PI * (c1 - c2) * sin(2 * PI * dot_value);
+
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
@@ -468,8 +472,8 @@ renderCUDA(
 			if (rho3d <= rho2d) {
 				// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
 				const float2 dL_ds = {
-					dL_dG * -G * s.x + dL_dz * Tw.x,
-					dL_dG * -G * s.y + dL_dz * Tw.y
+					dL_dG * -G * s.x + dL_dtmp * frequency_vec.x + dL_dz * Tw.x,
+					dL_dG * -G * s.y + dL_dtmp * frequency_vec.y + dL_dz * Tw.y
 				};
 				const float3 dz_dTw = {s.x, s.y, 1.0};
 				const float dsx_pz = dL_ds.x / p.z;
