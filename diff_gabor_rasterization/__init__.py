@@ -68,13 +68,13 @@ class _RasterizeGabors(torch.autograd.Function):
         raster_settings,
     ):
         
-        print("means3D: ", means3D)
-        print("frequencies: ", frequencies)
-        print("colors_precomp: ", colors_precomp)
-        print("colors_precomp2: ", colors_precomp2)
-        print("opacities: ", opacities)
-        print("scales: ", scales)
-        print("rotations: ", rotations)
+        # print("means3D: ", means3D)
+        # print("frequencies: ", frequencies)
+        # print("colors_precomp: ", colors_precomp)
+        # print("colors_precomp2: ", colors_precomp2)
+        # print("opacities: ", opacities)
+        # print("scales: ", scales)
+        # print("rotations: ", rotations)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
@@ -177,28 +177,25 @@ class _RasterizeGabors(torch.autograd.Function):
         else:
              grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
 
-        print("d_image.shape: ", d_image.shape)
-        save_image = d_image.clone().detach()
-        save_image = save_image.permute(1, 2, 0)
-        save_image = save_image.squeeze(-1)
-        # save_image = save_image * 1000000
-        print("save_image.shape: ", save_image.shape)
+        # print("d_image.shape: ", d_image.shape)
+        # save_image = d_image.clone().detach()
+        # save_image = save_image.permute(1, 2, 0)
+        # save_image = save_image.squeeze(-1)
+        # # save_image = save_image * 1000000
+        # print("save_image.shape: ", save_image.shape)
 
-        # save_image = save_image.clamp(max=1.0, min=0.0)
-        print("save_image: \n", save_image[200:300, 200:300])
-        img = save_image.cpu().numpy()
+        # # save_image = save_image.clamp(max=1.0, min=0.0)
+        # print("save_image: \n", save_image[200:300, 200:300])
+        # img = save_image.cpu().numpy()
 
-        max_ = 10
-        img = (img + max_) / (2 * max_)
-        img = np.clip(img, a_min = 0, a_max = 1)
+        # max_ = 10
+        # img = (img + max_) / (2 * max_)
+        # img = np.clip(img, a_min = 0, a_max = 1)
 
-        import matplotlib 
-        img = matplotlib.colormaps['seismic'](img)[..., :3]
-        # plt.clf()
-        # plt.imshow(img)
-        # plt.savefig("d_image.png")
+        # import matplotlib 
+        # img = matplotlib.colormaps['seismic'](img)[..., :3]
 
-        plt.imsave("d_image.png", img)
+        # plt.imsave("d_image.png", img)
 
         # grad_frequencies = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
         # grad_colors_precomp2 = torch.zeros(grad_colors_precomp.shape).float().cuda() # tmp
@@ -225,35 +222,35 @@ class _RasterizeGabors(torch.autograd.Function):
         #     None,
         # )
 
-        grads = (
-            torch.zeros_like(grad_means3D),
-            torch.zeros_like(grad_means2D),
-            torch.zeros_like(grad_sh),
-            torch.zeros_like(grad_sh2),
-            torch.zeros_like(grad_colors_precomp),
-            torch.zeros_like(grad_colors_precomp2),
-            torch.zeros_like(grad_opacities),
-            grad_frequencies, 
-            torch.zeros_like(grad_scales),
-            torch.zeros_like(grad_rotations),
-            torch.zeros_like(grad_cov3Ds_precomp),
-            None,
-        )
-
         # grads = (
-        #     grad_means3D,
-        #     grad_means2D,
-        #     grad_sh,
-        #     grad_sh2,
-        #     grad_colors_precomp,
-        #     grad_colors_precomp2,
-        #     grad_opacities,
+        #     torch.zeros_like(grad_means3D),
+        #     torch.zeros_like(grad_means2D),
+        #     torch.zeros_like(grad_sh),
+        #     torch.zeros_like(grad_sh2),
+        #     torch.zeros_like(grad_colors_precomp),
+        #     torch.zeros_like(grad_colors_precomp2),
+        #     torch.zeros_like(grad_opacities),
         #     grad_frequencies, 
-        #     grad_scales,
-        #     grad_rotations,
-        #     grad_cov3Ds_precomp,
+        #     torch.zeros_like(grad_scales),
+        #     torch.zeros_like(grad_rotations),
+        #     torch.zeros_like(grad_cov3Ds_precomp),
         #     None,
         # )
+
+        grads = (
+            grad_means3D,
+            grad_means2D,
+            grad_sh,
+            grad_sh2,
+            grad_colors_precomp,
+            grad_colors_precomp2,
+            grad_opacities,
+            grad_frequencies, 
+            grad_scales,
+            grad_rotations,
+            grad_cov3Ds_precomp,
+            None,
+        )
 
         return grads
 
