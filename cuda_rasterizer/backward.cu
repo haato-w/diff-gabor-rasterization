@@ -374,8 +374,8 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic1); // ここにfrequencyの重みを足す
-				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dchannel_dcolor * dL_dchannel * harmonic2); // ここにfrequencyの重みを足す
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic1); // ここにfrequencyの重みを足す
+				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic2); // ここにfrequencyの重みを足す
 				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 
 				// if (ch == 2) {
