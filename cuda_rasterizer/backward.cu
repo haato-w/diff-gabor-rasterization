@@ -369,7 +369,7 @@ renderCUDA(
 				const float dL_dchannel = dL_dpixel[ch];
 				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
 
-				dL_dtmp += dL_dchannel * w * PI * (c1 - c2) * sin(2 * PI * dot_value);
+				dL_dtmp += dL_dchannel * w * PI * (-c1 + c2) * sin(2 * PI * dot_value);
 
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
@@ -392,13 +392,13 @@ renderCUDA(
 				const float r0 = collected_colors[0 * BLOCK_SIZE + j];
 				const float g0 = collected_colors[1 * BLOCK_SIZE + j];
 				const float b0 = collected_colors[2 * BLOCK_SIZE + j];
-				// const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
-				// const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
-				// const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
-				// const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
-				const float part = dL_dpixel[0] * r0 + dL_dpixel[1] * g0 + dL_dpixel[2] * b0;
-				const float tmp1 = -PI * s.x * sin(2.0 * PI * dot_value);
-				const float tmp2 = -PI * s.y * sin(2.0 * PI * dot_value);
+				const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+				const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+				const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+				const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
+				// const float part = dL_dpixel[0] * r0 + dL_dpixel[1] * g0 + dL_dpixel[2] * b0;
+				const float tmp1 = PI * s.x * sin(2.0 * PI * dot_value);
+				const float tmp2 = PI * s.y * sin(2.0 * PI * dot_value);
 				// if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
 					dL_dw1 = part * tmp1;
 					dL_dw2 = part * tmp2;
