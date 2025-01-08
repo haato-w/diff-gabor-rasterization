@@ -30,7 +30,7 @@ namespace BACKWARD
 		const float* bg_color,
 		const float2* means2D,
 		const float2* frequencies,
-		const float* wave_length_in_pix,
+		// const float* wave_length_in_pix,
 		const float4* normal_opacity,
 		const float* transMats,
 		const float* colors,

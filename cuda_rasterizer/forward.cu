@@ -214,7 +214,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	int* radii,
 	float2* points_xy_image,
 	float2* geo_frequencies,
-	float* wave_length_in_pix,
+	// float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -307,42 +307,42 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	} 
 
 	// Compute wave vector in pixel coordinate
-	float3 point = ((float3*)orig_points)[idx];
-	// printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
-	glm::vec4 extended_mean_vec = glm::vec4(point.x, point.y, point.z, 1.0);
-	// printf("extended_mean_vec.x: %f, extended_mean_vec.y: %f, extended_mean_vec.z: %f, extended_mean_vec.w: %f\n", extended_mean_vec.x, extended_mean_vec.y, extended_mean_vec.z, extended_mean_vec.w);
-	glm::vec4 extended_ndc_mean = glm::transpose(world2ndc_mat) * extended_mean_vec;
-	glm::vec3 ndc_mean_vec = glm::vec3(extended_ndc_mean.x / extended_ndc_mean.w, extended_ndc_mean.y / extended_ndc_mean.w, extended_ndc_mean.z / extended_ndc_mean.w);
-	// printf("ndc_mean_vec.x: %f, ndc_mean_vec.y: %f, ndc_mean_vec.z: %f\n", ndc_mean_vec.x, ndc_mean_vec.y, ndc_mean_vec.z);
-	glm::vec3 pix_mean = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_mean_vec, 1.0);
-	// printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
+	// float3 point = ((float3*)orig_points)[idx];
+	// // printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
+	// glm::vec4 extended_mean_vec = glm::vec4(point.x, point.y, point.z, 1.0);
+	// // printf("extended_mean_vec.x: %f, extended_mean_vec.y: %f, extended_mean_vec.z: %f, extended_mean_vec.w: %f\n", extended_mean_vec.x, extended_mean_vec.y, extended_mean_vec.z, extended_mean_vec.w);
+	// glm::vec4 extended_ndc_mean = glm::transpose(world2ndc_mat) * extended_mean_vec;
+	// glm::vec3 ndc_mean_vec = glm::vec3(extended_ndc_mean.x / extended_ndc_mean.w, extended_ndc_mean.y / extended_ndc_mean.w, extended_ndc_mean.z / extended_ndc_mean.w);
+	// // printf("ndc_mean_vec.x: %f, ndc_mean_vec.y: %f, ndc_mean_vec.z: %f\n", ndc_mean_vec.x, ndc_mean_vec.y, ndc_mean_vec.z);
+	// glm::vec3 pix_mean = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_mean_vec, 1.0);
+	// // printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
 
 	// converte frequency to wave (avoid 0 division)
 	float2 frequency_vec = ((float2*)frequencies)[idx];
-	float2 wave_vec;
-	const float frequency_length2 = (frequency_vec.x * frequency_vec.x + frequency_vec.y * frequency_vec.y);
-	wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : frequency_vec.x / frequency_length2;
-	wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : frequency_vec.y / frequency_length2;
+	// float2 wave_vec;
+	// const float frequency_length2 = (frequency_vec.x * frequency_vec.x + frequency_vec.y * frequency_vec.y);
+	// wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : frequency_vec.x / frequency_length2;
+	// wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : frequency_vec.y / frequency_length2;
 	// printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
 
-	glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
-	glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
-	glm::vec3 world_wave_point = glm::vec3(extended_world_wave_point.x / extended_world_wave_point.w, extended_world_wave_point.y / extended_world_wave_point.w, extended_world_wave_point.z / extended_world_wave_point.w);
-	glm::vec4 extended_ndc_wave_point = glm::transpose(world2ndc_mat) * glm::vec4(world_wave_point, 1.0);
-	glm::vec3 ndc_wave_point = glm::vec3(extended_ndc_wave_point.x / extended_ndc_wave_point.w, extended_ndc_wave_point.y / extended_ndc_wave_point.w, extended_ndc_wave_point.z / extended_ndc_wave_point.w);
-	glm::vec3 pix_wave_point = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_wave_point, 1.0);
+	// glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
+	// glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
+	// glm::vec3 world_wave_point = glm::vec3(extended_world_wave_point.x / extended_world_wave_point.w, extended_world_wave_point.y / extended_world_wave_point.w, extended_world_wave_point.z / extended_world_wave_point.w);
+	// glm::vec4 extended_ndc_wave_point = glm::transpose(world2ndc_mat) * glm::vec4(world_wave_point, 1.0);
+	// glm::vec3 ndc_wave_point = glm::vec3(extended_ndc_wave_point.x / extended_ndc_wave_point.w, extended_ndc_wave_point.y / extended_ndc_wave_point.w, extended_ndc_wave_point.z / extended_ndc_wave_point.w);
+	// glm::vec3 pix_wave_point = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_wave_point, 1.0);
 	// printf("pix_wave_point.x: %f, pix_wave_point.y: %f, pix_wave_point.z: %f\n", pix_wave_point.x, pix_wave_point.y, pix_wave_point.z);
 
-	glm::vec3 pix_wave = pix_wave_point - pix_mean;
+	// glm::vec3 pix_wave = pix_wave_point - pix_mean;
 	// printf("pix_wave.x: %f, pix_wave.y: %f, pix_wave.z: %f\n", pix_wave.x, pix_wave.y, pix_wave.z);
-	float pix_wave_length = sqrt(pix_wave.x * pix_wave.x + pix_wave.y * pix_wave.y);
+	// float pix_wave_length = sqrt(pix_wave.x * pix_wave.x + pix_wave.y * pix_wave.y);
 	// printf("pix_wave_length: %f\n", pix_wave_length);
 
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
 	geo_frequencies[idx] = frequency_vec;
-	wave_length_in_pix[idx] = pix_wave_length;
+	// wave_length_in_pix[idx] = pix_wave_length;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
@@ -359,7 +359,7 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
 	const float2* __restrict__ frequency,
-	const float* __restrict__ wave_length_in_pix,
+	// const float* __restrict__ wave_length_in_pix,
 	const float* __restrict__ features,
 	const float* __restrict__ features2,
 	const float* __restrict__ transMats,
@@ -394,7 +394,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float2 collected_frequency[BLOCK_SIZE];
-	__shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
+	// __shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
@@ -436,7 +436,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_frequency[block.thread_rank()] = frequency[coll_id];
-			collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
+			// collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
@@ -453,7 +453,7 @@ renderCUDA(
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
 			const float2 frequency_vec = collected_frequency[j];
-			const float wave_length = collected_wave_length_in_pix[j];
+			// const float wave_length = collected_wave_length_in_pix[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
@@ -484,17 +484,8 @@ renderCUDA(
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 			float harmonic1;
 			float harmonic2;
-			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-			// 	harmonic1 = 0.5;
-			// 	harmonic2 = 0.5;
-			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
-				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			// } else {
-			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-    		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-			// 	harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			// }
+			harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
 
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
@@ -575,7 +566,7 @@ void FORWARD::render(
 	float focal_x, float focal_y,
 	const float2* means2D,
 	const float2* frequency,
-	const float* wave_length_in_pix, 
+	// const float* wave_length_in_pix, 
 	const float* colors,
 	const float* colors2,
 	const float* transMats,
@@ -594,7 +585,7 @@ void FORWARD::render(
 		focal_x, focal_y,
 		means2D,
 		frequency, 
-		wave_length_in_pix, 
+		// wave_length_in_pix, 
 		colors,
 		colors2,
 		transMats,
@@ -629,7 +620,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	int* radii,
 	float2* means2D,
 	float2* geo_frequencies,
-	float* wave_length_in_pix,
+	// float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -662,7 +653,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		radii,
 		means2D,
 		geo_frequencies, 
-		wave_length_in_pix, 
+		// wave_length_in_pix, 
 		depths,
 		transMats,
 		rgb,

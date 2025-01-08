@@ -152,7 +152,7 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
 	const float2* __restrict__ frequencies,
-	const float* __restrict__ wave_length_in_pix,
+	// const float* __restrict__ wave_length_in_pix,
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
@@ -191,7 +191,7 @@ renderCUDA(
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	__shared__ float2 collected_frequency[BLOCK_SIZE];
-	__shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
+	// __shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
@@ -272,7 +272,7 @@ renderCUDA(
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
 			collected_frequency[block.thread_rank()] = frequencies[coll_id];
-			collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
+			// collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
@@ -298,7 +298,7 @@ renderCUDA(
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
 			const float2 frequency_vec = collected_frequency[j];
-			const float wave_length = collected_wave_length_in_pix[j];
+			// const float wave_length = collected_wave_length_in_pix[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
 			const float3 Tw = collected_Tw[j];
@@ -340,21 +340,12 @@ renderCUDA(
 			float dL_dtmp = 0.0f;
 			const int global_id = collected_id[j];
 			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
-			// const float harmonic1 = (1 + cos(2 * PI * dot_value)) / 2;
-			// const float harmonic2 = (1 - cos(2 * PI * dot_value)) / 2;
+
 			float harmonic1;
 			float harmonic2;
-			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-			// 	harmonic1 = 0.5;
-			// 	harmonic2 = 0.5;
-			// } else if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
-				harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-				harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			// } else {
-			// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-    		// 	harmonic1 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-			// 	harmonic2 = (1 - interp_factor) * 0.5 + interp_factor * (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
-			// }
+			harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+
 			for (int ch = 0; ch < C; ch++)
 			{
 				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
@@ -385,29 +376,17 @@ renderCUDA(
 			// frequency vector gradient
 			float dL_dw1;
 			float dL_dw2;
-			// if (wave_length < ANTI_ALIASE_MIN_THREASHOLD) {
-			// 	dL_dw1 = 0;
-			// 	dL_dw2 = 0;
-			// } else  {
-				const float r0 = collected_colors[0 * BLOCK_SIZE + j];
-				const float g0 = collected_colors[1 * BLOCK_SIZE + j];
-				const float b0 = collected_colors[2 * BLOCK_SIZE + j];
-				const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
-				const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
-				const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
-				const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
-				// const float part = dL_dpixel[0] * r0 + dL_dpixel[1] * g0 + dL_dpixel[2] * b0;
-				const float tmp1 = PI * s.x * sin(2.0 * PI * dot_value);
-				const float tmp2 = PI * s.y * sin(2.0 * PI * dot_value);
-				// if (ANTI_ALIASE_MAX_THREASHOLD < wave_length) {
-					dL_dw1 = part * tmp1;
-					dL_dw2 = part * tmp2;
-				// } else {
-				// 	const float interp_factor = ((wave_length - ANTI_ALIASE_MIN_THREASHOLD) / THREASHOLD_RANGE);
-				// 	dL_dw1 = interp_factor * part * tmp1;
-				// 	dL_dw2 = interp_factor * part * tmp2;
-				// }
-			// }
+			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
+			const float g0 = collected_colors[1 * BLOCK_SIZE + j];
+			const float b0 = collected_colors[2 * BLOCK_SIZE + j];
+			const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+			const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
+			const float tmp1 = PI * s.x * sin(2.0 * PI * dot_value);
+			const float tmp2 = PI * s.y * sin(2.0 * PI * dot_value);
+			dL_dw1 = part * tmp1;
+			dL_dw2 = part * tmp2;
 
 			atomicAdd(&(dL_dfrequency[global_id * 2]), dchannel_dcolor * dL_dw1); // ここにfrequencyの重みを足す
 			atomicAdd(&(dL_dfrequency[global_id * 2 + 1]), dchannel_dcolor * dL_dw2); // ここにfrequencyの重みを足す
@@ -783,7 +762,7 @@ void BACKWARD::render(
 	const float* bg_color,
 	const float2* means2D,
 	const float2* frequencies,
-	const float* wave_length_in_pix,
+	// const float* wave_length_in_pix,
 	const float4* normal_opacity,
 	const float* colors,
 	const float* colors2,
@@ -810,7 +789,7 @@ void BACKWARD::render(
 		bg_color,
 		means2D,
 		frequencies, 
-		wave_length_in_pix, 
+		// wave_length_in_pix, 
 		normal_opacity,
 		transMats,
 		colors,

@@ -160,7 +160,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
 	obtain(chunk, geom.frequency, P, 128);
-	obtain(chunk, geom.wave_length_in_pix, P, 128);
+	// obtain(chunk, geom.wave_length_in_pix, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -274,7 +274,7 @@ int CudaRasterizer::Rasterizer::forward(
 		radii,
 		geomState.means2D,
 		geomState.frequency, // geomStateに入れる必要ないかも？
-		geomState.wave_length_in_pix, // geomStateに入れる必要ないかも？
+		// geomState.wave_length_in_pix, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
@@ -342,7 +342,7 @@ int CudaRasterizer::Rasterizer::forward(
 		focal_x, focal_y,
 		geomState.means2D,
 		geomState.frequency,
-		geomState.wave_length_in_pix, 
+		// geomState.wave_length_in_pix, 
 		feature_ptr,
 		feature_ptr2,
 		transMat_ptr,
@@ -430,7 +430,7 @@ void CudaRasterizer::Rasterizer::backward(
 		background,
 		geomState.means2D,
 		geomState.frequency,
-		geomState.wave_length_in_pix,
+		// geomState.wave_length_in_pix,
 		geomState.normal_opacity,
 		color_ptr,
 		color_ptr2,
