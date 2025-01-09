@@ -409,7 +409,7 @@ renderCUDA(
 				atomicAdd(&(dL_dweights_for_frequency[global_id * F + i]), dchannel_dcolor * tmp);
 			}
 
-			const float for_s_grad = -part2 * PI * max_frequency / (F - 1) *  tmp_for_s_grad;
+			const float for_s_grad = w * (-part2) * PI * max_frequency / (F - 1) *  tmp_for_s_grad;
 
 			// d_image[pix_id] += dchannel_dcolor * dL_dw2;
 
