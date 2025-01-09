@@ -34,9 +34,8 @@ namespace CudaRasterizer
 		bool* clamped;
 		int* internal_radii;
 		float2* means2D;
-		// float2* frequency;
-		float* weight_for_frequency;
-		// float* wave_length_in_pix;
+		float* weights_for_frequency_angle;
+		float* frequency_lengths;
 		float* transMat;
 		float4* normal_opacity;
 		float* rgb;

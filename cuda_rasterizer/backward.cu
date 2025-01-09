@@ -151,11 +151,9 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
-	// const float2* __restrict__ frequencies,
-	const float* __restrict__ weight_for_frequency,
+	const float* __restrict__ weights_for_frequency_angle, 
+	const float* __restrict__ frequency_lengths, 
 	const int F, 
-	const float max_frequency, 
-	// const float* __restrict__ wave_length_in_pix,
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
@@ -169,7 +167,8 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dweights_for_frequency,
+	float* __restrict__ dL_dweights_for_frequency_angle, 
+	float* __restrict__ dL_dfrequency_lengths, 
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2, 
 	float* d_image)
@@ -349,9 +348,9 @@ renderCUDA(
 			float harmonic2 = 0.0f;
 			for (int i = 0; i < F; i++)
 			{
-				const float weight = weight_for_frequency[global_id * F + i];
-				harmonic1 += weight * (1.0 + cos(2.0 * PI * i * max_frequency * s.x / (F - 1))) / 2.0;
-				harmonic2 += weight * (1.0 - cos(2.0 * PI * i * max_frequency * s.x / (F - 1))) / 2.0;
+				const float weight = weights_for_frequency_angle[global_id * F + i];
+				harmonic1 += weight * (1.0 + cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
+				harmonic2 += weight * (1.0 - cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
 			}
 
 			for (int ch = 0; ch < C; ch++)
@@ -402,14 +401,14 @@ renderCUDA(
 			float tmp_for_s_grad = 0.0f;
 			for (int i = 0; i < F; i++)
 			{
-				const float tmp = (part1 + part2 * cos(2.0 * PI * i * max_frequency * s.x / (F - 1))) / 2.0;
+				const float tmp = (part1 + part2 * cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
 				
-				tmp_for_s_grad += i * sin(2.0 * PI * i * max_frequency * s.x / (F - 1));
+				tmp_for_s_grad += i * sin(2.0 * PI * i * s.x / (F - 1));
 
-				atomicAdd(&(dL_dweights_for_frequency[global_id * F + i]), dchannel_dcolor * tmp);
+				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * tmp);
 			}
 
-			const float for_s_grad = w * (-part2) * PI * max_frequency / (F - 1) *  tmp_for_s_grad;
+			const float for_s_grad = w * (-part2) * PI / (F - 1) *  tmp_for_s_grad;
 
 			// d_image[pix_id] += dchannel_dcolor * dL_dw2;
 
@@ -781,11 +780,9 @@ void BACKWARD::render(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
-	// const float2* frequencies,
-	const float* weight_for_frequency,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
 	const int F, 
-	const float max_frequency, 
-	// const float* wave_length_in_pix,
 	const float4* normal_opacity,
 	const float* colors,
 	const float* colors2,
@@ -799,7 +796,8 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dweights_for_frequency,
+	float* dL_dweights_for_frequency_angle, 
+	float* dL_dfrequency_lengths, 
 	float* dL_dcolors,
 	float* dL_dcolors2, 
 	float* d_image)
@@ -811,11 +809,9 @@ void BACKWARD::render(
 		focal_x, focal_y,
 		bg_color,
 		means2D,
-		// frequencies, 
-		weight_for_frequency, 
+		weights_for_frequency_angle, 
+		frequency_lengths, 
 		F, 
-		max_frequency, 
-		// wave_length_in_pix, 
 		normal_opacity,
 		transMats,
 		colors,
@@ -829,7 +825,8 @@ void BACKWARD::render(
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dweights_for_frequency,
+		dL_dweights_for_frequency_angle, 
+		dL_dfrequency_lengths, 
 		dL_dcolors,
 		dL_dcolors2, 
 		d_image

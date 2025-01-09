@@ -159,13 +159,12 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
-	// obtain(chunk, geom.frequency, P, 128);
-	// obtain(chunk, geom.wave_length_in_pix, P, 128);
+	obtain(chunk, geom.weights_for_frequency_angle, P * F, 128);
+	obtain(chunk, geom.frequency_lengths, P * F, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.rgb2, P * 3, 128);
-	obtain(chunk, geom.weight_for_frequency, P * F, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
@@ -208,9 +207,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	// const float* frequencies,
-	const float* weights_for_frequency,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
 	const int F, // the number of frequency candidates
-	const float max_frequency, 
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -259,7 +258,8 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
-		weights_for_frequency, 
+		weights_for_frequency_angle, 
+		frequency_lengths, 
 		F, 
 		(glm::vec2*)scales,
 		scale_modifier,
@@ -278,8 +278,8 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
-		geomState.weight_for_frequency, // geomStateに入れる必要ないかも？
-		// geomState.wave_length_in_pix, // geomStateに入れる必要ないかも？
+		geomState.weights_for_frequency_angle, // geomStateに入れる必要ないかも？
+		geomState.frequency_lengths, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
@@ -346,11 +346,9 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		geomState.means2D,
-		geomState.weight_for_frequency, 
+		geomState.weights_for_frequency_angle, 
+		geomState.frequency_lengths, 
 		F, 
-		max_frequency, 
-		// geomState.frequency,
-		// geomState.wave_length_in_pix, 
 		feature_ptr,
 		feature_ptr2,
 		transMat_ptr,
@@ -372,10 +370,9 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
-	// const float* frequencies,
-	const float* weights_for_frequency,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
 	const int F, // the number of frequency candidates
-	const float max_frequency, 
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -397,7 +394,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
-	float* dL_dweights_for_frequency,
+	float* dL_dweights_for_frequency_angle, 
+	float* dL_dfrequency_lengths, 
 	float* dL_dcolor,
 	float* dL_dcolor2,
 	float* dL_dmean3D,
@@ -440,11 +438,9 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		background,
 		geomState.means2D,
-		// geomState.frequency,
-		geomState.weight_for_frequency,
+		geomState.weights_for_frequency_angle, 
+		geomState.frequency_lengths, 
 		F, 
-		max_frequency, 
-		// geomState.wave_length_in_pix,
 		geomState.normal_opacity,
 		color_ptr,
 		color_ptr2,
@@ -458,7 +454,8 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dweights_for_frequency,
+		dL_dweights_for_frequency_angle, 
+		dL_dfrequency_lengths, 
 		dL_dcolor,
 		dL_dcolor2, 
 		d_image), debug)

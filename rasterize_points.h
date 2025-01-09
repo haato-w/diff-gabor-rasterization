@@ -19,9 +19,9 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torc
 RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths, 
 	const int F, 
-	const float max_frequency, 
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -42,13 +42,13 @@ RasterizeGaborsCUDA(
 	const bool prefiltered,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaborsBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths, 
 	const int F, 
-	const float max_frequency, 
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
