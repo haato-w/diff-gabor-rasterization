@@ -194,7 +194,8 @@ __device__ bool compute_aabb(
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
-	const float* frequencies,
+	const float* weights_for_frequency,
+	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -213,7 +214,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	float2* geo_frequencies,
+	float* geo_weight_for_frequency,
 	// float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
@@ -318,7 +319,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// // printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
 
 	// converte frequency to wave (avoid 0 division)
-	float2 frequency_vec = ((float2*)frequencies)[idx];
+	// float2 frequency_vec = ((float2*)frequencies)[idx];
 	// float2 wave_vec;
 	// const float frequency_length2 = (frequency_vec.x * frequency_vec.x + frequency_vec.y * frequency_vec.y);
 	// wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : frequency_vec.x / frequency_length2;
@@ -338,10 +339,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// float pix_wave_length = sqrt(pix_wave.x * pix_wave.x + pix_wave.y * pix_wave.y);
 	// printf("pix_wave_length: %f\n", pix_wave_length);
 
+	for (int i = 0; i < F; i++)
+	{
+		geo_weight_for_frequency[idx * F + i] = weights_for_frequency[idx * F + i];
+	}
+
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
-	geo_frequencies[idx] = frequency_vec;
+	// geo_frequencies[idx] = frequency_vec;
 	// wave_length_in_pix[idx] = pix_wave_length;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
@@ -358,7 +364,10 @@ renderCUDA(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
-	const float2* __restrict__ frequency,
+	// const float2* __restrict__ frequency,
+	const float* __restrict__ weight_for_frequency,
+	const int F, 
+	const float max_frequency, 
 	// const float* __restrict__ wave_length_in_pix,
 	const float* __restrict__ features,
 	const float* __restrict__ features2,
@@ -393,7 +402,7 @@ renderCUDA(
 	// Allocate storage for batches of collectively fetched data.
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
-	__shared__ float2 collected_frequency[BLOCK_SIZE];
+	// __shared__ float2 collected_frequency[BLOCK_SIZE];
 	// __shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
@@ -435,7 +444,7 @@ renderCUDA(
 			int coll_id = point_list[range.x + progress];
 			collected_id[block.thread_rank()] = coll_id;
 			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_frequency[block.thread_rank()] = frequency[coll_id];
+			// collected_frequency[block.thread_rank()] = frequency[coll_id];
 			// collected_wave_length_in_pix[block.thread_rank()] = wave_length_in_pix[coll_id];
 			collected_normal_opacity[block.thread_rank()] = normal_opacity[coll_id];
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
@@ -452,7 +461,7 @@ renderCUDA(
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
-			const float2 frequency_vec = collected_frequency[j];
+			// const float2 frequency_vec = collected_frequency[j];
 			// const float wave_length = collected_wave_length_in_pix[j];
 			const float3 Tu = collected_Tu[j];
 			const float3 Tv = collected_Tv[j];
@@ -481,11 +490,20 @@ renderCUDA(
 			// if (rho >= 1.0)
 			// 	continue;
 			
-			float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
-			float harmonic1;
-			float harmonic2;
-			harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
-			harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			// float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
+			float harmonic1 = 0.0f;
+			float harmonic2 = 0.0f;
+			// float dot_value = s.x;
+			// harmonic1 = (1.0 + cos(2.0 * PI * dot_value)) / 2.0;
+			// harmonic2 = (1.0 - cos(2.0 * PI * dot_value)) / 2.0;
+			for (int i = 0; i < F; i++)
+			{
+				const float weight = weight_for_frequency[collected_id[j] * F + i];
+				harmonic1 += weight * (1.0 + cos(2.0 * PI * i * max_frequency * s.x / (F - 1))) / 2.0;
+				harmonic2 += weight * (1.0 - cos(2.0 * PI * i * max_frequency * s.x / (F - 1))) / 2.0;
+			}
+			// harmonic1 = (1.0 < harmonic1) ? 1.0f : harmonic1;
+			// harmonic2 = (1.0 < harmonic2) ? 1.0f : harmonic2;
 
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
@@ -565,7 +583,10 @@ void FORWARD::render(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* means2D,
-	const float2* frequency,
+	// const float2* frequency,
+	const float* weights_for_frequency,
+	const int F, 
+	const float max_frequency, 
 	// const float* wave_length_in_pix, 
 	const float* colors,
 	const float* colors2,
@@ -584,7 +605,10 @@ void FORWARD::render(
 		W, H,
 		focal_x, focal_y,
 		means2D,
-		frequency, 
+		// frequency, 
+		weights_for_frequency, 
+		F, 
+		max_frequency, 
 		// wave_length_in_pix, 
 		colors,
 		colors2,
@@ -600,7 +624,8 @@ void FORWARD::render(
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
-	const float* frequencies,
+	const float* weights_for_frequency,
+	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -619,7 +644,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, const float tan_fovy,
 	int* radii,
 	float2* means2D,
-	float2* geo_frequencies,
+	float* geo_weight_for_frequency,
 	// float* wave_length_in_pix,
 	float* depths,
 	float* transMats,
@@ -633,7 +658,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
-		frequencies, 
+		weights_for_frequency, 
+		F, 
 		scales,
 		scale_modifier,
 		rotations,
@@ -652,7 +678,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
-		geo_frequencies, 
+		geo_weight_for_frequency, 
 		// wave_length_in_pix, 
 		depths,
 		transMats,

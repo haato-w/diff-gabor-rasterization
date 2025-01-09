@@ -152,19 +152,20 @@ void CudaRasterizer::Rasterizer::markVisible(
 		present);
 }
 
-CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P)
+CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P, int F)
 {
 	GeometryState geom;
 	obtain(chunk, geom.depths, P, 128);
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
-	obtain(chunk, geom.frequency, P, 128);
+	// obtain(chunk, geom.frequency, P, 128);
 	// obtain(chunk, geom.wave_length_in_pix, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.rgb2, P * 3, 128);
+	obtain(chunk, geom.weight_for_frequency, P * F, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
@@ -172,7 +173,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	return geom;
 }
 
-CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N)
+CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N, int F)
 {
 	ImageState img;
 	obtain(chunk, img.accum_alpha, N * 3, 128);
@@ -181,7 +182,7 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	return img;
 }
 
-CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P)
+CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P, int F)
 {
 	BinningState binning;
 	obtain(chunk, binning.point_list, P, 128);
@@ -206,7 +207,10 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
-	const float* frequencies,
+	// const float* frequencies,
+	const float* weights_for_frequency,
+	const int F, // the number of frequency candidates
+	const float max_frequency, 
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -229,9 +233,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
-	size_t chunk_size = required<GeometryState>(P);
+	size_t chunk_size = required<GeometryState>(P, F);
 	char* chunkptr = geometryBuffer(chunk_size);
-	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, F);
 
 	if (radii == nullptr)
 	{
@@ -242,9 +246,9 @@ int CudaRasterizer::Rasterizer::forward(
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
-	size_t img_chunk_size = required<ImageState>(width * height);
+	size_t img_chunk_size = required<ImageState>(width * height, F);
 	char* img_chunkptr = imageBuffer(img_chunk_size);
-	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
+	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height, F);
 
 	if (NUM_CHANNELS != 3 && colors_precomp == nullptr)
 	{
@@ -255,7 +259,8 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
-		frequencies, 
+		weights_for_frequency, 
+		F, 
 		(glm::vec2*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
@@ -273,7 +278,7 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
-		geomState.frequency, // geomStateに入れる必要ないかも？
+		geomState.weight_for_frequency, // geomStateに入れる必要ないかも？
 		// geomState.wave_length_in_pix, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
@@ -293,9 +298,9 @@ int CudaRasterizer::Rasterizer::forward(
 	int num_rendered;
 	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
 
-	size_t binning_chunk_size = required<BinningState>(num_rendered);
+	size_t binning_chunk_size = required<BinningState>(num_rendered, F);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
-	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, F);
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
@@ -341,7 +346,10 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		geomState.means2D,
-		geomState.frequency,
+		geomState.weight_for_frequency, 
+		F, 
+		max_frequency, 
+		// geomState.frequency,
 		// geomState.wave_length_in_pix, 
 		feature_ptr,
 		feature_ptr2,
@@ -364,7 +372,10 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
-	const float* frequencies,
+	// const float* frequencies,
+	const float* weights_for_frequency,
+	const int F, // the number of frequency candidates
+	const float max_frequency, 
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -386,7 +397,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
-	float* dL_dfrequency,
+	float* dL_dweights_for_frequency,
 	float* dL_dcolor,
 	float* dL_dcolor2,
 	float* dL_dmean3D,
@@ -398,9 +409,9 @@ void CudaRasterizer::Rasterizer::backward(
 	float* d_image, 
 	bool debug)
 {
-	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
-	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
-	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
+	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, F);
+	BinningState binningState = BinningState::fromChunk(binning_buffer, R, F);
+	ImageState imgState = ImageState::fromChunk(img_buffer, width * height, F);
 
 	if (radii == nullptr)
 	{
@@ -429,7 +440,10 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		background,
 		geomState.means2D,
-		geomState.frequency,
+		// geomState.frequency,
+		geomState.weight_for_frequency,
+		F, 
+		max_frequency, 
 		// geomState.wave_length_in_pix,
 		geomState.normal_opacity,
 		color_ptr,
@@ -444,7 +458,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dfrequency,
+		dL_dweights_for_frequency,
 		dL_dcolor,
 		dL_dcolor2, 
 		d_image), debug)

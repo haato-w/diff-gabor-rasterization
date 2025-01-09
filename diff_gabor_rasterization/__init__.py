@@ -29,7 +29,10 @@ def rasterize_gabors(
     colors_precomp,
     colors_precomp2,
     opacities,
-    frequencies, 
+    # frequencies, 
+    weights_for_frequency, 
+    F, 
+    max_frequency, 
     scales,
     rotations,
     cov3Ds_precomp,
@@ -43,7 +46,10 @@ def rasterize_gabors(
         colors_precomp,
         colors_precomp2,
         opacities,
-        frequencies, 
+        # frequencies, 
+        weights_for_frequency, 
+        F, 
+        max_frequency, 
         scales,
         rotations,
         cov3Ds_precomp,
@@ -61,7 +67,9 @@ class _RasterizeGabors(torch.autograd.Function):
         colors_precomp,
         colors_precomp2,
         opacities,
-        frequencies, 
+        weights_for_frequency, 
+        F, 
+        max_frequency, 
         scales,
         rotations,
         cov3Ds_precomp,
@@ -80,7 +88,10 @@ class _RasterizeGabors(torch.autograd.Function):
         args = (
             raster_settings.bg, 
             means3D,
-            frequencies, 
+            # frequencies, 
+            weights_for_frequency, 
+            F, 
+            max_frequency, 
             colors_precomp,
             colors_precomp2,
             opacities,
@@ -117,16 +128,20 @@ class _RasterizeGabors(torch.autograd.Function):
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
-        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, frequencies, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer)
+        ctx.F = F
+        ctx.max_frequency = max_frequency
+        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, weights_for_frequency, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer)
         return color, radii, depth
 
     @staticmethod
     def backward(ctx, grad_out_color, grad_radii, grad_depth):
 
         # Restore necessary values from context
+        max_frequency = ctx.max_frequency
+        F = ctx.F
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
-        colors_precomp, colors_precomp2, means3D, frequencies, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+        colors_precomp, colors_precomp2, means3D, weights_for_frequency, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
         # print("frequencies: \n", frequencies)
 
@@ -141,7 +156,10 @@ class _RasterizeGabors(torch.autograd.Function):
         # Restructure args as C++ method expects them
         args = (raster_settings.bg,
                 means3D, 
-                frequencies, 
+                # frequencies, 
+                weights_for_frequency, 
+                F, 
+                max_frequency, 
                 radii, 
                 colors_precomp, 
                 colors_precomp2, 
@@ -169,13 +187,13 @@ class _RasterizeGabors(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_frequencies, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
 
         # print("d_image.shape: ", d_image.shape)
         # save_image = d_image.clone().detach()
@@ -230,7 +248,9 @@ class _RasterizeGabors(torch.autograd.Function):
         #     torch.zeros_like(grad_colors_precomp),
         #     torch.zeros_like(grad_colors_precomp2),
         #     torch.zeros_like(grad_opacities),
-        #     grad_frequencies, 
+        #     grad_weights_for_frequency, 
+        #     None, 
+        #     None, 
         #     torch.zeros_like(grad_scales),
         #     torch.zeros_like(grad_rotations),
         #     torch.zeros_like(grad_cov3Ds_precomp),
@@ -245,7 +265,9 @@ class _RasterizeGabors(torch.autograd.Function):
             grad_colors_precomp,
             grad_colors_precomp2,
             grad_opacities,
-            grad_frequencies, 
+            grad_weights_for_frequency, 
+            None, 
+            None, 
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
@@ -284,7 +306,7 @@ class GaborRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, frequencies, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, weights_for_frequency, F, max_frequency, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
@@ -323,7 +345,10 @@ class GaborRasterizer(nn.Module):
             colors_precomp,
             colors_precomp2,
             opacities,
-            frequencies, 
+            # frequencies, 
+            weights_for_frequency, 
+            F, 
+            max_frequency, 
             scales, 
             rotations,
             cov3D_precomp,

@@ -19,7 +19,9 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torc
 RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& waves,
+	const torch::Tensor& weights_for_frequency,
+	const int F, 
+	const float max_frequency, 
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -44,7 +46,9 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
  RasterizeGaborsBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& waves,
+	const torch::Tensor& weights_for_frequency,
+	const int F, 
+	const float max_frequency, 
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
