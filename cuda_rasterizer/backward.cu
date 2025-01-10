@@ -346,11 +346,18 @@ renderCUDA(
 
 			float harmonic1 = 0.0f;
 			float harmonic2 = 0.0f;
+			float angle_vec_x[10]; // Currently, 10 is a MAX candidate num.
+			float angle_vec_y[10];
+			float dot_value[10];
 			for (int i = 0; i < F; i++)
 			{
 				const float weight = weights_for_frequency_angle[global_id * F + i];
-				harmonic1 += weight * (1.0 + cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
-				harmonic2 += weight * (1.0 - cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
+				const float frequency_len = frequency_lengths[global_id * F + i];
+				angle_vec_x[i] = cos(PI * i / F);
+				angle_vec_y[i] = sin(PI * i / F);
+				dot_value[i] = angle_vec_x[i] * s.x + angle_vec_y[i] * s.y;
+				harmonic1 += weight * (1.0 + cos(2.0 * PI * frequency_len * dot_value[i])) / 2.0;
+				harmonic2 += weight * (1.0 - cos(2.0 * PI * frequency_len * dot_value[i])) / 2.0;
 			}
 
 			for (int ch = 0; ch < C; ch++)
@@ -378,37 +385,35 @@ renderCUDA(
 				// 	d_image[pix_id] += dL_dchannel * dchannel_dcolor * harmonic1;
 				// }
 			}
-			// frequency vector gradient
-			// float dL_dw1;
-			// float dL_dw2;
+			// weight and freqency-length gradient
 			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
 			const float g0 = collected_colors[1 * BLOCK_SIZE + j];
 			const float b0 = collected_colors[2 * BLOCK_SIZE + j];
 			const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
 			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
 			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
-			// const float part = dL_dpixel[0] * (-r0 + r1) + dL_dpixel[1] * (-g0 + g1) + dL_dpixel[2] * (-b0 + b1);
-			// const float tmp1 = PI * s.x * sin(2.0 * PI * dot_value);
-			// const float tmp2 = PI * s.y * sin(2.0 * PI * dot_value);
-			// dL_dw1 = part * tmp1;
-			// dL_dw2 = part * tmp2;
-
-			// atomicAdd(&(dL_dfrequency[global_id * 2]), dchannel_dcolor * dL_dw1); // ここにfrequencyの重みを足す
-			// atomicAdd(&(dL_dfrequency[global_id * 2 + 1]), dchannel_dcolor * dL_dw2); // ここにfrequencyの重みを足す
 
 			const float part1 = dL_dpixel[0] * (r0 + r1) + dL_dpixel[1] * (g0 + g1) + dL_dpixel[2] * (b0 + b1);
 			const float part2 = dL_dpixel[0] * (r0 - r1) + dL_dpixel[1] * (g0 - g1) + dL_dpixel[2] * (b0 - b1);
-			float tmp_for_s_grad = 0.0f;
+			float tmp_for_dsx = 0.0f;
+			float tmp_for_dsy = 0.0f;
 			for (int i = 0; i < F; i++)
 			{
-				const float tmp = (part1 + part2 * cos(2.0 * PI * i * s.x / (F - 1))) / 2.0;
-				
-				tmp_for_s_grad += i * sin(2.0 * PI * i * s.x / (F - 1));
+				const float weight = weights_for_frequency_angle[global_id * F + i];
+				const float frequency_len = frequency_lengths[global_id * F + i];
 
-				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * tmp);
+				const float dcolor_dw = (part1 + part2 * cos(2.0 * PI * frequency_len * dot_value[i])) / 2.0;
+				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * dcolor_dw);
+
+				const float dcolor_df = -part2 * weight * PI * dot_value[i] * sin(2.0 * PI * frequency_len * dot_value[i]);
+				atomicAdd(&(dL_dfrequency_lengths[global_id * F + i]), dchannel_dcolor * dcolor_df);
+
+				const float tmp = weight * sin(2.0 * PI * frequency_len * dot_value[i]) * frequency_len;
+				tmp_for_dsx += tmp * angle_vec_x[i];
+				tmp_for_dsy += tmp * angle_vec_y[i];
 			}
-
-			const float for_s_grad = w * (-part2) * PI / (F - 1) *  tmp_for_s_grad;
+			const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
+			const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
 
 			// d_image[pix_id] += dchannel_dcolor * dL_dw2;
 
@@ -472,8 +477,8 @@ renderCUDA(
 			if (rho3d <= rho2d) {
 				// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
 				const float2 dL_ds = {
-					dL_dG * -G * s.x + for_s_grad + dL_dz * Tw.x,
-					dL_dG * -G * s.y + dL_dz * Tw.y
+					dL_dG * -G * s.x + dL_dsx + dL_dz * Tw.x,
+					dL_dG * -G * s.y + dL_dsy + dL_dz * Tw.y
 				};
 				const float3 dz_dTw = {s.x, s.y, 1.0};
 				const float dsx_pz = dL_ds.x / p.z;
