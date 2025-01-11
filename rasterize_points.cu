@@ -42,6 +42,7 @@ RasterizeGaborsCUDA(
 	const torch::Tensor& means3D,
 	const torch::Tensor& weights_for_frequency_angle, 
 	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const int F, 
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -76,6 +77,7 @@ RasterizeGaborsCUDA(
   CHECK_INPUT(means3D);
   CHECK_INPUT(weights_for_frequency_angle);
   CHECK_INPUT(frequency_lengths);
+  CHECK_INPUT(phases);
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
   CHECK_INPUT(opacity);
@@ -123,6 +125,7 @@ RasterizeGaborsCUDA(
 		means3D.contiguous().data<float>(),
 		weights_for_frequency_angle.contiguous().data<float>(), 
 		frequency_lengths.contiguous().data<float>(), 
+		phases.contiguous().data<float>(), 
 		F, 
 		sh.contiguous().data_ptr<float>(),
 		sh2.contiguous().data_ptr<float>(),
@@ -147,12 +150,13 @@ RasterizeGaborsCUDA(
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaborsBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
 	const torch::Tensor& weights_for_frequency_angle, 
 	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const int F, 
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
@@ -182,6 +186,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   CHECK_INPUT(means3D);
   CHECK_INPUT(weights_for_frequency_angle);
   CHECK_INPUT(frequency_lengths);
+  CHECK_INPUT(phases);
   CHECK_INPUT(radii);
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
@@ -215,6 +220,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_dweights_for_frequency_angle = torch::zeros({P, F}, means3D.options());
   torch::Tensor dL_dfrequency_lengths = torch::zeros({P, F}, means3D.options());
+  torch::Tensor dL_dphases = torch::zeros({P, F}, means3D.options());
   torch::Tensor dL_dtransMat = torch::zeros({P, 9}, means3D.options());
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dsh2 = torch::zeros({P, M, 3}, means3D.options());
@@ -232,6 +238,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  means3D.contiguous().data<float>(),
 	  weights_for_frequency_angle.contiguous().data<float>(), 
 	  frequency_lengths.contiguous().data<float>(), 
+	  phases.contiguous().data<float>(), 
 	  F, 
 	  sh.contiguous().data<float>(),
 	  sh2.contiguous().data<float>(),
@@ -257,6 +264,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dopacity.contiguous().data<float>(),
 	  dL_dweights_for_frequency_angle.contiguous().data<float>(), 
 	  dL_dfrequency_lengths.contiguous().data<float>(), 
+	  dL_dphases.contiguous().data<float>(), 
 	  dL_dcolors.contiguous().data<float>(),
 	  dL_dcolors2.contiguous().data<float>(),
 	  dL_dmeans3D.contiguous().data<float>(),
@@ -269,7 +277,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  debug);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image);
 }
 
 torch::Tensor markVisible(

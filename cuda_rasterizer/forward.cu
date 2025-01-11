@@ -196,6 +196,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const float* weights_for_frequency_angle, 
 	const float* frequency_lengths, 
+	const float* phases, 
 	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
@@ -217,6 +218,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float2* points_xy_image,
 	float* geo_weights_for_frequency_angle, 
 	float* geo_frequency_lengths, 
+	float* geo_phases, 
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -344,6 +346,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	{
 		geo_weights_for_frequency_angle[idx * F + i] = weights_for_frequency_angle[idx * F + i];
 		geo_frequency_lengths[idx * F + i] = frequency_lengths[idx * F + i];
+		geo_phases[idx * F + i] = phases[idx * F + i];
 	}
 
 	depths[idx] = p_view.z;
@@ -366,6 +369,7 @@ renderCUDA(
 	const float2* __restrict__ points_xy_image,
 	const float* __restrict__ geo_weights_for_frequency_angle, 
 	const float* __restrict__ geo_frequency_lengths, 
+	const float* __restrict__ geo_phases, 
 	const int F, 
 	const float* __restrict__ features,
 	const float* __restrict__ features2,
@@ -494,11 +498,12 @@ renderCUDA(
 			{
 				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
 				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
+				const float phase = geo_phases[collected_id[j] * F + i];
 				const float angle_vec_x = cos(PI * (float)i / (float)F);
 				const float angle_vec_y = sin(PI * (float)i / (float)F);
 				const float dot_value = angle_vec_x * s.x + angle_vec_y * s.y;
-				harmonic1 += weight * (1.0 + cos(2.0 * PI * frequency_length * dot_value)) / 2.0;
-				harmonic2 += weight * (1.0 - cos(2.0 * PI * frequency_length * dot_value)) / 2.0;
+				harmonic1 += weight * (1.0 + cos(2.0 * PI * frequency_length * dot_value + phase)) / 2.0;
+				harmonic2 += weight * (1.0 - cos(2.0 * PI * frequency_length * dot_value + phase)) / 2.0;
 			}
 			// harmonic1 = (1.0 < harmonic1) ? 1.0f : harmonic1;
 			// harmonic2 = (1.0 < harmonic2) ? 1.0f : harmonic2;
@@ -583,6 +588,7 @@ void FORWARD::render(
 	const float2* means2D,
 	const float* geo_weights_for_frequency_angle, 
 	const float* geo_frequency_lengths, 
+	const float* geo_phases, 
 	const int F, 
 	const float* colors,
 	const float* colors2,
@@ -603,6 +609,7 @@ void FORWARD::render(
 		means2D,
 		geo_weights_for_frequency_angle, 
 		geo_frequency_lengths, 
+		geo_phases, 
 		F, 
 		colors,
 		colors2,
@@ -620,6 +627,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
 	const float* weights_for_frequency_angle, 
 	const float* frequency_lengths, 
+	const float* phases, 
 	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
@@ -641,6 +649,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	float2* means2D,
 	float* geo_weights_for_frequency_angle, 
 	float* geo_frequency_lengths, 
+	float* geo_phases, 
 	float* depths,
 	float* transMats,
 	float* rgb,
@@ -655,6 +664,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means3D,
 		weights_for_frequency_angle, 
 		frequency_lengths, 
+		phases, 
 		F, 
 		scales,
 		scale_modifier,
@@ -676,6 +686,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		means2D,
 		geo_weights_for_frequency_angle,
 		geo_frequency_lengths, 
+		geo_phases, 
 		depths,
 		transMats,
 		rgb,

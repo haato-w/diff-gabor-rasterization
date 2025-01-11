@@ -31,6 +31,7 @@ def rasterize_gabors(
     opacities,
     weights_for_frequency_angle, 
     frequency_lengths, 
+    phases, 
     F, 
     scales,
     rotations,
@@ -47,6 +48,7 @@ def rasterize_gabors(
         opacities,
         weights_for_frequency_angle, 
         frequency_lengths, 
+        phases, 
         F, 
         scales,
         rotations,
@@ -67,6 +69,7 @@ class _RasterizeGabors(torch.autograd.Function):
         opacities,
         weights_for_frequency_angle, 
         frequency_lengths, 
+        phases, 
         F, 
         scales,
         rotations,
@@ -88,6 +91,7 @@ class _RasterizeGabors(torch.autograd.Function):
             means3D,
             weights_for_frequency_angle, 
             frequency_lengths, 
+            phases, 
             F, 
             colors_precomp,
             colors_precomp2,
@@ -126,7 +130,23 @@ class _RasterizeGabors(torch.autograd.Function):
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.F = F
-        ctx.save_for_backward(colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle, frequency_lengths, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer)
+        ctx.save_for_backward(
+            colors_precomp, 
+            colors_precomp2, 
+            means3D, 
+            weights_for_frequency_angle, 
+            frequency_lengths, 
+            phases, 
+            scales, 
+            rotations, 
+            cov3Ds_precomp, 
+            radii, 
+            sh, 
+            sh2, 
+            geomBuffer, 
+            binningBuffer, 
+            imgBuffer
+        )
         return color, radii, depth
 
     @staticmethod
@@ -136,7 +156,7 @@ class _RasterizeGabors(torch.autograd.Function):
         F = ctx.F
         num_rendered = ctx.num_rendered
         raster_settings = ctx.raster_settings
-        colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle, frequency_lengths, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
+        colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle, frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
 
         # print("frequencies: \n", frequencies)
 
@@ -153,6 +173,7 @@ class _RasterizeGabors(torch.autograd.Function):
                 means3D, 
                 weights_for_frequency_angle, 
                 frequency_lengths, 
+                phases, 
                 F, 
                 radii, 
                 colors_precomp, 
@@ -181,13 +202,13 @@ class _RasterizeGabors(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
             try:
-                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_phases, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw.dump")
                 print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
                 raise ex
         else:
-             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_phases, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
 
         # print("d_image.shape: ", d_image.shape)
         # save_image = d_image.clone().detach()
@@ -261,6 +282,7 @@ class _RasterizeGabors(torch.autograd.Function):
             grad_opacities,
             grad_weights_for_frequency_angle, 
             grad_frequency_lengths, 
+            grad_phases, 
             None, 
             grad_scales,
             grad_rotations,
@@ -300,7 +322,7 @@ class GaborRasterizer(nn.Module):
             
         return visible
 
-    def forward(self, means3D, means2D, opacities, weights_for_frequency_angle, frequency_lengths, F, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
+    def forward(self, means3D, means2D, opacities, weights_for_frequency_angle, frequency_lengths, phases, F, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
         
         raster_settings = self.raster_settings
 
@@ -341,6 +363,7 @@ class GaborRasterizer(nn.Module):
             opacities,
             weights_for_frequency_angle, 
             frequency_lengths, 
+            phases, 
             F, 
             scales, 
             rotations,

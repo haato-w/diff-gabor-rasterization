@@ -31,6 +31,7 @@ namespace BACKWARD
 		const float2* means2D,
 		const float* weights_for_frequency_angle, 
 		const float* frequency_lengths, 
+		const float* phases, 
 		const int F, 
 		const float4* normal_opacity,
 		const float* transMats,
@@ -47,6 +48,7 @@ namespace BACKWARD
 		float* dL_dopacity,
 		float* dL_dweights_for_frequency_angle, 
 		float* dL_dfrequency_lengths, 
+		float* dL_dphases, 
 		float* dL_dcolors,
 		float* dL_dcolors2, 
 		float* d_image);

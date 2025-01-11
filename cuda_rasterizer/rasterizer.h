@@ -38,6 +38,7 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* weights_for_frequency_angle, 
 			const float* frequency_lengths, 
+			const float* phases, 
 			const int F, // the number of frequency candidates
 			const float* shs,
 			const float* shs2,
@@ -65,6 +66,7 @@ namespace CudaRasterizer
 			const float* means3D,
 			const float* weights_for_frequency_angle, 
 			const float* frequency_lengths, 
+			const float* phases, 
 			const int F, // the number of frequency candidates
 			const float* shs,
 			const float* shs2,
@@ -89,6 +91,7 @@ namespace CudaRasterizer
 			float* dL_dopacity,
 			float* dL_dweights_for_frequency_angle, 
 			float* dL_dfrequency_lengths, 
+			float* dL_dphases, 
 			float* dL_dcolor,
 			float* dL_dcolor2,
 			float* dL_dmean3D,

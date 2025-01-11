@@ -21,6 +21,7 @@ RasterizeGaborsCUDA(
 	const torch::Tensor& means3D,
 	const torch::Tensor& weights_for_frequency_angle,
 	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const int F, 
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -42,12 +43,13 @@ RasterizeGaborsCUDA(
 	const bool prefiltered,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaborsBackwardCUDA(
 	 const torch::Tensor& background,
 	const torch::Tensor& means3D,
 	const torch::Tensor& weights_for_frequency_angle,
 	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const int F, 
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,

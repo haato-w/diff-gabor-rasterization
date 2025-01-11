@@ -36,6 +36,7 @@ namespace CudaRasterizer
 		float2* means2D;
 		float* weights_for_frequency_angle;
 		float* frequency_lengths;
+		float* phases;
 		float* transMat;
 		float4* normal_opacity;
 		float* rgb;

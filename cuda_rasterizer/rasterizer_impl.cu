@@ -161,6 +161,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.means2D, P, 128);
 	obtain(chunk, geom.weights_for_frequency_angle, P * F, 128);
 	obtain(chunk, geom.frequency_lengths, P * F, 128);
+	obtain(chunk, geom.phases, P * F, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -209,6 +210,7 @@ int CudaRasterizer::Rasterizer::forward(
 	// const float* frequencies,
 	const float* weights_for_frequency_angle, 
 	const float* frequency_lengths, 
+	const float* phases, 
 	const int F, // the number of frequency candidates
 	const float* shs,
 	const float* shs2,
@@ -260,6 +262,7 @@ int CudaRasterizer::Rasterizer::forward(
 		means3D,
 		weights_for_frequency_angle, 
 		frequency_lengths, 
+		phases, 
 		F, 
 		(glm::vec2*)scales,
 		scale_modifier,
@@ -280,6 +283,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		geomState.weights_for_frequency_angle, // geomStateに入れる必要ないかも？
 		geomState.frequency_lengths, // geomStateに入れる必要ないかも？
+		geomState.phases, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
@@ -348,6 +352,7 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.means2D,
 		geomState.weights_for_frequency_angle, 
 		geomState.frequency_lengths, 
+		geomState.phases, 
 		F, 
 		feature_ptr,
 		feature_ptr2,
@@ -372,6 +377,7 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* means3D,
 	const float* weights_for_frequency_angle, 
 	const float* frequency_lengths, 
+	const float* phases, 
 	const int F, // the number of frequency candidates
 	const float* shs,
 	const float* shs2,
@@ -396,6 +402,7 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dopacity,
 	float* dL_dweights_for_frequency_angle, 
 	float* dL_dfrequency_lengths, 
+	float* dL_dphases, 
 	float* dL_dcolor,
 	float* dL_dcolor2,
 	float* dL_dmean3D,
@@ -440,6 +447,7 @@ void CudaRasterizer::Rasterizer::backward(
 		geomState.means2D,
 		geomState.weights_for_frequency_angle, 
 		geomState.frequency_lengths, 
+		geomState.phases, 
 		F, 
 		geomState.normal_opacity,
 		color_ptr,
@@ -456,6 +464,7 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dopacity,
 		dL_dweights_for_frequency_angle, 
 		dL_dfrequency_lengths, 
+		dL_dphases, 
 		dL_dcolor,
 		dL_dcolor2, 
 		d_image), debug)
