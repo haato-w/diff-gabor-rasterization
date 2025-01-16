@@ -292,7 +292,7 @@ renderCUDA(
 			for (int i = 0; i < F; i++) {
 				collected_weights_for_frequency_angle[i * BLOCK_SIZE + block.thread_rank()] = weights_for_frequency_angle[coll_id * F + i];
 				collected_frequency_lengths[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
-				collected_phases[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
+				collected_phases[i * BLOCK_SIZE + block.thread_rank()] = phases[coll_id * F + i];
 			}
 		}
 		block.sync();

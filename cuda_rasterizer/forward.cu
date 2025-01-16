@@ -422,7 +422,7 @@ renderCUDA(
 				const float angle_vec_x = __cosf(PI * (float)i / (float)F);
 				const float angle_vec_y = __sinf(PI * (float)i / (float)F);
 				const float dot_value = angle_vec_x * s.x + angle_vec_y * s.y;
-				harmonic1 += weight * 0.5f *(1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
+				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
 				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
 			}
 			// harmonic1 = (1.0 < harmonic1) ? 1.0f : harmonic1;
