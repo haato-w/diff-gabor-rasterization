@@ -196,6 +196,9 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	// __shared__ float2 collected_frequency[BLOCK_SIZE];
 	// __shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
+	__shared__ float collected_weights_for_frequency_angle[4 * BLOCK_SIZE];
+	__shared__ float collected_frequency_lengths[4 * BLOCK_SIZE];
+	__shared__ float collected_phases[4 * BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
@@ -286,6 +289,11 @@ renderCUDA(
 				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
 			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
+			for (int i = 0; i < F; i++) {
+				collected_weights_for_frequency_angle[i * BLOCK_SIZE + block.thread_rank()] = weights_for_frequency_angle[coll_id * F + i];
+				collected_frequency_lengths[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
+				collected_phases[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
+			}
 		}
 		block.sync();
 
@@ -353,14 +361,14 @@ renderCUDA(
 			float dot_value[10];
 			for (int i = 0; i < F; i++)
 			{
-				const float weight = weights_for_frequency_angle[global_id * F + i];
-				const float frequency_len = frequency_lengths[global_id * F + i];
-				const float phase = phases[global_id * F + i];
-				angle_vec_x[i] = cos(PI * i / F);
-				angle_vec_y[i] = sin(PI * i / F);
+				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+				const float phase = collected_phases[i * BLOCK_SIZE + j];
+				angle_vec_x[i] = __cosf(PI * (float)i / (float)F);
+				angle_vec_y[i] = __sinf(PI * (float)i / (float)F);
 				dot_value[i] = angle_vec_x[i] * s.x + angle_vec_y[i] * s.y;
-				harmonic1 += weight * (1.0 + cos(2.0 * PI * frequency_len * dot_value[i] + phase)) / 2.0;
-				harmonic2 += weight * (1.0 - cos(2.0 * PI * frequency_len * dot_value[i] + phase)) / 2.0;
+				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
 			}
 
 			for (int ch = 0; ch < C; ch++)
@@ -402,20 +410,20 @@ renderCUDA(
 			float tmp_for_dsy = 0.0f;
 			for (int i = 0; i < F; i++)
 			{
-				const float weight = weights_for_frequency_angle[global_id * F + i];
-				const float frequency_len = frequency_lengths[global_id * F + i];
-				const float phase = phases[global_id * F + i];
+				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+				const float phase = collected_phases[i * BLOCK_SIZE + j];
 
-				const float dcolor_dw = (part1 + part2 * cos(2.0 * PI * frequency_len * dot_value[i] + phase)) / 2.0;
+				const float dcolor_dw = 0.5f * (part1 + part2 * __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
 				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * dcolor_dw);
 
-				const float dcolor_df = -part2 * weight * PI * dot_value[i] * sin(2.0 * PI * frequency_len * dot_value[i] + phase);
+				const float dcolor_df = -part2 * weight * PI * dot_value[i] * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
 				atomicAdd(&(dL_dfrequency_lengths[global_id * F + i]), dchannel_dcolor * dcolor_df);
 
-				const float tmp_for_dphases = -part2 * sin(2.0 * PI * frequency_len * dot_value[i] + phase) / 2.0;
+				const float tmp_for_dphases = -part2 * 0.5f * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
 				atomicAdd(&(dL_dphases[global_id * F + i]), dchannel_dcolor * tmp_for_dphases);
 
-				const float tmp = weight * sin(2.0 * PI * frequency_len * dot_value[i] + phase) * frequency_len;
+				const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
 				tmp_for_dsx += tmp * angle_vec_x[i];
 				tmp_for_dsy += tmp * angle_vec_y[i];
 			}

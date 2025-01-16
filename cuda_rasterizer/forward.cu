@@ -114,52 +114,6 @@ __device__ void compute_transmat(
 
 }
 
-__device__ void compute_transmat2(
-	const float3& p_orig,
-	const glm::vec2 scale,
-	float mod,
-	const glm::vec4 rot,
-	const float* projmatrix,
-	const float* viewmatrix,
-	const int W,
-	const int H, 
-	glm::mat4 &object2world_mat, 
-	glm::mat4 &world2ndc_mat, 
-	glm::mat3x4 &ndc2pix_mat
-) {
-
-	glm::mat3 R = quat_to_rotmat(rot);
-	glm::mat3 S = scale_to_mat(scale, mod);
-	glm::mat3 L = R * S;
-
-	// center of Gaussians in the camera coordinate
-	glm::mat4x4 H_mat = glm::mat4(
-		glm::vec4(L[0], 0.0),
-		glm::vec4(L[1], 0.0),
-		glm::vec4(0.0, 0.0, 0.0, 0.0),
-		glm::vec4(p_orig.x, p_orig.y, p_orig.z, 1)
-	);
-
-	glm::mat4 world2ndc = glm::mat4(
-		projmatrix[0], projmatrix[4], projmatrix[8], projmatrix[12],
-		projmatrix[1], projmatrix[5], projmatrix[9], projmatrix[13],
-		projmatrix[2], projmatrix[6], projmatrix[10], projmatrix[14],
-		projmatrix[3], projmatrix[7], projmatrix[11], projmatrix[15]
-	);
-
-	glm::mat3x4 ndc2pix = glm::mat3x4(
-		glm::vec4(float(W) / 2.0, 0.0, 0.0, float(W-1) / 2.0),
-		glm::vec4(0.0, float(H) / 2.0, 0.0, float(H-1) / 2.0),
-		// glm::vec4(0.0, 0.0, 1.0, 0.0),
-		glm::vec4(0.0, 0.0, 0.0, 1.0)
-	);
-
-	object2world_mat = glm::transpose(H_mat);
-	world2ndc_mat = world2ndc;
-	ndc2pix_mat = ndc2pix;
-	// object2pix_mat = ndc2pix * world2ndc * glm::transpose(H_mat);
-}
-
 // Computing the bounding box of the 2D Gaussian and its center
 // The center of the bounding box is used to create a low pass filter
 __device__ bool compute_aabb(
@@ -255,8 +209,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		T_ptr[idx * 3 + 0] = {T[0][0], T[0][1], T[0][2]};
 		T_ptr[idx * 3 + 1] = {T[1][0], T[1][1], T[1][2]};
 		T_ptr[idx * 3 + 2] = {T[2][0], T[2][1], T[2][2]};
-
-		compute_transmat2(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, object2world_mat, world2ndc_mat, ndc2pix_mat);
 	} else {
 		glm::vec3 *T_ptr = (glm::vec3*)transMat_precomp;
 		T = glm::mat3(
@@ -309,38 +261,6 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		rgb2[idx * C + 1] = result2.y;
 		rgb2[idx * C + 2] = result2.z;
 	} 
-
-	// Compute wave vector in pixel coordinate
-	// float3 point = ((float3*)orig_points)[idx];
-	// // printf("point.x: %f, point.y: %f, point.z: %f\n", point.x, point.y, point.z);
-	// glm::vec4 extended_mean_vec = glm::vec4(point.x, point.y, point.z, 1.0);
-	// // printf("extended_mean_vec.x: %f, extended_mean_vec.y: %f, extended_mean_vec.z: %f, extended_mean_vec.w: %f\n", extended_mean_vec.x, extended_mean_vec.y, extended_mean_vec.z, extended_mean_vec.w);
-	// glm::vec4 extended_ndc_mean = glm::transpose(world2ndc_mat) * extended_mean_vec;
-	// glm::vec3 ndc_mean_vec = glm::vec3(extended_ndc_mean.x / extended_ndc_mean.w, extended_ndc_mean.y / extended_ndc_mean.w, extended_ndc_mean.z / extended_ndc_mean.w);
-	// // printf("ndc_mean_vec.x: %f, ndc_mean_vec.y: %f, ndc_mean_vec.z: %f\n", ndc_mean_vec.x, ndc_mean_vec.y, ndc_mean_vec.z);
-	// glm::vec3 pix_mean = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_mean_vec, 1.0);
-	// // printf("pix_mean.x: %f, pix_mean.y: %f, pix_mean.z: %f\n", pix_mean.x, pix_mean.y, pix_mean.z);
-
-	// converte frequency to wave (avoid 0 division)
-	// float2 frequency_vec = ((float2*)frequencies)[idx];
-	// float2 wave_vec;
-	// const float frequency_length2 = (frequency_vec.x * frequency_vec.x + frequency_vec.y * frequency_vec.y);
-	// wave_vec.x = frequency_vec.x == 0.0 ? 0.0 : frequency_vec.x / frequency_length2;
-	// wave_vec.y = frequency_vec.y == 0.0 ? 0.0 : frequency_vec.y / frequency_length2;
-	// printf("wave_vec.x: %f, wave_vec.y: %f\n", wave_vec.x, wave_vec.y);
-
-	// glm::vec4 extended_wave_vec = glm::vec4(wave_vec.x, wave_vec.y, 0.0, 1.0);
-	// glm::vec4 extended_world_wave_point = glm::transpose(object2world_mat) * extended_wave_vec;
-	// glm::vec3 world_wave_point = glm::vec3(extended_world_wave_point.x / extended_world_wave_point.w, extended_world_wave_point.y / extended_world_wave_point.w, extended_world_wave_point.z / extended_world_wave_point.w);
-	// glm::vec4 extended_ndc_wave_point = glm::transpose(world2ndc_mat) * glm::vec4(world_wave_point, 1.0);
-	// glm::vec3 ndc_wave_point = glm::vec3(extended_ndc_wave_point.x / extended_ndc_wave_point.w, extended_ndc_wave_point.y / extended_ndc_wave_point.w, extended_ndc_wave_point.z / extended_ndc_wave_point.w);
-	// glm::vec3 pix_wave_point = glm::transpose(ndc2pix_mat) * glm::vec4(ndc_wave_point, 1.0);
-	// printf("pix_wave_point.x: %f, pix_wave_point.y: %f, pix_wave_point.z: %f\n", pix_wave_point.x, pix_wave_point.y, pix_wave_point.z);
-
-	// glm::vec3 pix_wave = pix_wave_point - pix_mean;
-	// printf("pix_wave.x: %f, pix_wave.y: %f, pix_wave.z: %f\n", pix_wave.x, pix_wave.y, pix_wave.z);
-	// float pix_wave_length = sqrt(pix_wave.x * pix_wave.x + pix_wave.y * pix_wave.y);
-	// printf("pix_wave_length: %f\n", pix_wave_length);
 
 	for (int i = 0; i < F; i++)
 	{
@@ -499,11 +419,11 @@ renderCUDA(
 				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
 				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
 				const float phase = geo_phases[collected_id[j] * F + i];
-				const float angle_vec_x = cos(PI * (float)i / (float)F);
-				const float angle_vec_y = sin(PI * (float)i / (float)F);
+				const float angle_vec_x = __cosf(PI * (float)i / (float)F);
+				const float angle_vec_y = __sinf(PI * (float)i / (float)F);
 				const float dot_value = angle_vec_x * s.x + angle_vec_y * s.y;
-				harmonic1 += weight * (1.0 + cos(2.0 * PI * frequency_length * dot_value + phase)) / 2.0;
-				harmonic2 += weight * (1.0 - cos(2.0 * PI * frequency_length * dot_value + phase)) / 2.0;
+				harmonic1 += weight * 0.5f *(1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
+				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
 			}
 			// harmonic1 = (1.0 < harmonic1) ? 1.0f : harmonic1;
 			// harmonic2 = (1.0 < harmonic2) ? 1.0f : harmonic2;
