@@ -190,12 +190,11 @@ class _RasterizeGabors(torch.autograd.Function):
             grad_colors_precomp,
             grad_colors_precomp2,
             grad_opacities,
+            grad_scales,
+            grad_rotations,
             grad_weights_for_frequency_angle, 
             grad_frequency_lengths, 
             grad_phases, 
-            None, 
-            grad_scales,
-            grad_rotations,
             grad_cov3Ds_precomp,
             None,
         )
@@ -262,8 +261,12 @@ class GaborRasterizer(nn.Module):
         
         if shs is None:
             shs = torch.Tensor([]).cuda()
+        if shs2 is None:
+            shs2 = torch.Tensor([]).cuda()
         if colors_precomp is None:
             colors_precomp = torch.Tensor([]).cuda()
+        if colors_precomp2 is None:
+            colors_precomp2 = torch.Tensor([]).cuda()
 
         if scales is None:
             scales = torch.Tensor([]).cuda()
