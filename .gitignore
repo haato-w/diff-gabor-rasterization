@@ -1,5 +1,5 @@
 build/
-diff_surfel_rasterization.egg-info/
+diff_gabor_rasterization.egg-info/
 dist/
 *.so
 .vscode
