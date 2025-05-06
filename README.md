@@ -1,6 +1,19 @@
-# Differential Surfel Rasterization
+# Differential Gabor Rasterization
 
-This is the rasterization engine for the paper "2D Gaussian Splatting for  Geometrically Accurate Radiance Fields". If you can make use of it in your own research, please be so kind to cite us.
+This is the rasterization engine for the paper "3D Gabor Splatting: Reconstruction of High-frequency Surface Texture using Gabor Noise". If you can make use of it in your own research, please be so kind to cite us.
+
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@inproceedings{watanabe3dgabors,
+      title     = {3D Gabor Splatting: Reconstruction of High-frequency Surface Texture using Gabor Noise},
+      author    = {Haato Watanabe, Kenji Tojo and Nobuyuki Umetani},
+      publisher = {Eurographics Association}, 
+      booktitle = {Proceedings of the Eurographics 2025 Short Papers},
+      year      = {2025}
+}</code></pre>
+  </div>
+</section>
 
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
