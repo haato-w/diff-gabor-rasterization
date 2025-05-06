@@ -16,4 +16,6 @@
 #define BLOCK_X 16
 #define BLOCK_Y 16
 
+#define F 4 // the number of frequency candidates
+
 #endif

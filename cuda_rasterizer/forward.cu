@@ -148,14 +148,19 @@ __device__ bool compute_aabb(
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
+	const float* phases, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const float* shs2,
 	bool* clamped,
 	const float* transMat_precomp,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
@@ -164,9 +169,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
+	float* geo_weights_for_frequency_angle, 
+	float* geo_frequency_lengths, 
+	float* geo_phases, 
 	float* depths,
 	float* transMats,
 	float* rgb,
+	float* rgb2,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -242,6 +251,19 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		rgb[idx * C + 1] = result.y;
 		rgb[idx * C + 2] = result.z;
 	}
+	if (colors_precomp2 == nullptr) {
+		glm::vec3 result2 = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs2, clamped);
+		rgb2[idx * C + 0] = result2.x;
+		rgb2[idx * C + 1] = result2.y;
+		rgb2[idx * C + 2] = result2.z;
+	} 
+
+	for (int i = 0; i < F; i++)
+	{
+		geo_weights_for_frequency_angle[idx * F + i] = weights_for_frequency_angle[idx * F + i];
+		geo_frequency_lengths[idx * F + i] = frequency_lengths[idx * F + i];
+		geo_phases[idx * F + i] = phases[idx * F + i];
+	}
 
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
@@ -261,7 +283,11 @@ renderCUDA(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ geo_weights_for_frequency_angle, 
+	const float* __restrict__ geo_frequency_lengths, 
+	const float* __restrict__ geo_phases, 
 	const float* __restrict__ features,
+	const float* __restrict__ features2,
 	const float* __restrict__ transMats,
 	const float* __restrict__ depths,
 	const float4* __restrict__ normal_opacity,
@@ -372,6 +398,20 @@ renderCUDA(
 			if (power > 0.0f)
 				continue;
 
+			float harmonic1 = 0.0f;
+			float harmonic2 = 0.0f;
+			for (int i = 0; i < F; i++)
+			{
+				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
+				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
+				const float phase = geo_phases[collected_id[j] * F + i];
+				const float angle_vec_x = __cosf(PI * (float)i / (float)F);
+				const float angle_vec_y = __sinf(PI * (float)i / (float)F);
+				const float dot_value = angle_vec_x * s.x + angle_vec_y * s.y;
+				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
+				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
+			}
+
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
@@ -408,7 +448,10 @@ renderCUDA(
 
 			// Eq. (3) from 3D Gaussian splatting paper.
 			for (int ch = 0; ch < CHANNELS; ch++)
-				C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
+			{
+				C[ch] += features[collected_id[j] * CHANNELS + ch] * w * harmonic1;
+				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w * harmonic2;
+			}
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -447,7 +490,11 @@ void FORWARD::render(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* means2D,
+	const float* geo_weights_for_frequency_angle, 
+	const float* geo_frequency_lengths, 
+	const float* geo_phases, 
 	const float* colors,
+	const float* colors2,
 	const float* transMats,
 	const float* depths,
 	const float4* normal_opacity,
@@ -463,7 +510,11 @@ void FORWARD::render(
 		W, H,
 		focal_x, focal_y,
 		means2D,
+		geo_weights_for_frequency_angle, 
+		geo_frequency_lengths, 
+		geo_phases, 
 		colors,
+		colors2,
 		transMats,
 		depths,
 		normal_opacity,
@@ -476,14 +527,19 @@ void FORWARD::render(
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
+	const float* phases, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
 	const float* opacities,
 	const float* shs,
+	const float* shs2,
 	bool* clamped,
 	const float* transMat_precomp,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
@@ -492,9 +548,13 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, const float tan_fovy,
 	int* radii,
 	float2* means2D,
+	float* geo_weights_for_frequency_angle, 
+	float* geo_frequency_lengths, 
+	float* geo_phases, 
 	float* depths,
 	float* transMats,
 	float* rgb,
+	float* rgb2,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
@@ -503,14 +563,19 @@ void FORWARD::preprocess(int P, int D, int M,
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
+		weights_for_frequency_angle, 
+		frequency_lengths, 
+		phases, 
 		scales,
 		scale_modifier,
 		rotations,
 		opacities,
 		shs,
+		shs2,
 		clamped,
 		transMat_precomp,
 		colors_precomp,
+		colors_precomp2,
 		viewmatrix, 
 		projmatrix,
 		cam_pos,
@@ -519,9 +584,13 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
+		geo_weights_for_frequency_angle,
+		geo_frequency_lengths, 
+		geo_phases, 
 		depths,
 		transMats,
 		rgb,
+		rgb2,
 		normal_opacity,
 		grid,
 		tiles_touched,

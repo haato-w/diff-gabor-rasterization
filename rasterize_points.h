@@ -19,7 +19,11 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torc
 RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
@@ -32,17 +36,22 @@ RasterizeGaborsCUDA(
 	const int image_height,
 	const int image_width,
 	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
 	const bool debug);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaborsBackwardCUDA(
-	 const torch::Tensor& background,
+	const torch::Tensor& background,
 	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths, 
+	const torch::Tensor& phases, 
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
 	const torch::Tensor& scales,
 	const torch::Tensor& rotations,
 	const float scale_modifier,
@@ -54,6 +63,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& dL_dout_color,
 	const torch::Tensor& dL_dout_others,
 	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
 	const int degree,
 	const torch::Tensor& campos,
 	const torch::Tensor& geomBuffer,

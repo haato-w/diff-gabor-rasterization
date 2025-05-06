@@ -149,9 +149,13 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
+	const float* __restrict__ weights_for_frequency_angle, 
+	const float* __restrict__ frequency_lengths, 
+	const float* __restrict__ phases, 
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
+	const float* __restrict__ colors2,
 	const float* __restrict__ depths,
 	const float* __restrict__ final_Ts,
 	const uint32_t* __restrict__ n_contrib,
@@ -161,7 +165,11 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dcolors)
+	float* __restrict__ dL_dweights_for_frequency_angle, 
+	float* __restrict__ dL_dfrequency_lengths, 
+	float* __restrict__ dL_dphases, 
+	float* __restrict__ dL_dcolors, 
+	float* __restrict__ dL_dcolors2)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
@@ -182,8 +190,12 @@ renderCUDA(
 
 	__shared__ int collected_id[BLOCK_SIZE];
 	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float collected_weights_for_frequency_angle[F * BLOCK_SIZE];
+	__shared__ float collected_frequency_lengths[F * BLOCK_SIZE];
+	__shared__ float collected_phases[F * BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
+	__shared__ float collected_colors2[C * BLOCK_SIZE];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -264,9 +276,15 @@ renderCUDA(
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
-			for (int i = 0; i < C; i++)
+			for (int i = 0; i < C; i++) {
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
-				// collected_depths[block.thread_rank()] = depths[coll_id];
+				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
+			}
+			for (int i = 0; i < F; i++) {
+				collected_weights_for_frequency_angle[i * BLOCK_SIZE + block.thread_rank()] = weights_for_frequency_angle[coll_id * F + i];
+				collected_frequency_lengths[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
+				collected_phases[i * BLOCK_SIZE + block.thread_rank()] = phases[coll_id * F + i];
+			}
 		}
 		block.sync();
 
@@ -321,9 +339,29 @@ renderCUDA(
 			// pair).
 			float dL_dalpha = 0.0f;
 			const int global_id = collected_id[j];
+
+			float harmonic1 = 0.0f;
+			float harmonic2 = 0.0f;
+			float angle_vec_x[F];
+			float angle_vec_y[F];
+			float dot_value[F];
+			for (int i = 0; i < F; i++)
+			{
+				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+				const float phase = collected_phases[i * BLOCK_SIZE + j];
+				angle_vec_x[i] = __cosf(PI * (float)i / (float)F);
+				angle_vec_y[i] = __sinf(PI * (float)i / (float)F);
+				dot_value[i] = angle_vec_x[i] * s.x + angle_vec_y[i] * s.y;
+				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+			}
+
 			for (int ch = 0; ch < C; ch++)
 			{
-				const float c = collected_colors[ch * BLOCK_SIZE + j];
+				const float c1 = collected_colors[ch * BLOCK_SIZE + j];
+				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
+				const float c = harmonic1 * c1 + harmonic2 * c2;
 				// Update last color (to be used in the next iteration)
 				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
 				last_color[ch] = c;
@@ -333,8 +371,43 @@ renderCUDA(
 				// Update the gradients w.r.t. color of the Gaussian. 
 				// Atomic, since this pixel is just one of potentially
 				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
+				atomicAdd(&(dL_dcolors[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic1); // ここにfrequencyの重みを足す
+				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic2); // ここにfrequencyの重みを足す
 			}
+
+			// weight and freqency-length gradient
+			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
+			const float g0 = collected_colors[1 * BLOCK_SIZE + j];
+			const float b0 = collected_colors[2 * BLOCK_SIZE + j];
+			const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+
+			const float part1 = dL_dpixel[0] * (r0 + r1) + dL_dpixel[1] * (g0 + g1) + dL_dpixel[2] * (b0 + b1);
+			const float part2 = dL_dpixel[0] * (r0 - r1) + dL_dpixel[1] * (g0 - g1) + dL_dpixel[2] * (b0 - b1);
+			float tmp_for_dsx = 0.0f;
+			float tmp_for_dsy = 0.0f;
+			for (int i = 0; i < F; i++)
+			{
+				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+				const float phase = collected_phases[i * BLOCK_SIZE + j];
+
+				const float dcolor_dw = 0.5f * (part1 + part2 * __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * dcolor_dw);
+
+				const float dcolor_df = -part2 * weight * PI * dot_value[i] * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
+				atomicAdd(&(dL_dfrequency_lengths[global_id * F + i]), dchannel_dcolor * dcolor_df);
+
+				const float tmp_for_dphases = -part2 * 0.5f * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
+				atomicAdd(&(dL_dphases[global_id * F + i]), dchannel_dcolor * tmp_for_dphases);
+
+				const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
+				tmp_for_dsx += tmp * angle_vec_x[i];
+				tmp_for_dsy += tmp * angle_vec_y[i];
+			}
+			const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
+			const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
 
 			float dL_dz = 0.0f;
 			float dL_dweight = 0;
@@ -396,8 +469,8 @@ renderCUDA(
 			if (rho3d <= rho2d) {
 				// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
 				const float2 dL_ds = {
-					dL_dG * -G * s.x + dL_dz * Tw.x,
-					dL_dG * -G * s.y + dL_dz * Tw.y
+					dL_dG * -G * s.x + dL_dsx + dL_dz * Tw.x,
+					dL_dG * -G * s.y + dL_dsy + dL_dz * Tw.y
 				};
 				const float3 dz_dTw = {s.x, s.y, 1.0};
 				const float dsx_pz = dL_ds.x / p.z;
@@ -579,6 +652,7 @@ __global__ void preprocessCUDA(
 	const float* transMats,
 	const int* radii,
 	const float* shs,
+	const float* shs2,
 	const bool* clamped,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
@@ -594,7 +668,9 @@ __global__ void preprocessCUDA(
 	float* dL_dtransMats,
 	const float* dL_dnormal3Ds,
 	float* dL_dcolors,
+	float* dL_dcolors2,
 	float* dL_dshs,
+	float* dL_dshs2,
 	float3* dL_dmean2Ds,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
@@ -622,6 +698,8 @@ __global__ void preprocessCUDA(
 
 	if (shs)
 		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs);
+	if (shs2)
+		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs2, clamped, (glm::vec3*)dL_dcolors2, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs2);
 	
 	// hack the gradient here for densitification
 	float depth = transMats[idx * 9 + 8];
@@ -635,6 +713,7 @@ void BACKWARD::preprocess(
 	const float3* means3D,
 	const int* radii,
 	const float* shs,
+	const float* shs2,
 	const bool* clamped,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
@@ -649,7 +728,9 @@ void BACKWARD::preprocess(
 	const float* dL_dnormal3Ds,
 	float* dL_dtransMats,
 	float* dL_dcolors,
+	float* dL_dcolors2,
 	float* dL_dshs,
+	float* dL_dshs2,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
 	glm::vec4* dL_drots)
@@ -660,6 +741,7 @@ void BACKWARD::preprocess(
 		transMats,
 		radii,
 		shs,
+		shs2,
 		clamped,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
@@ -674,7 +756,9 @@ void BACKWARD::preprocess(
 		dL_dtransMats,
 		dL_dnormal3Ds,
 		dL_dcolors,
+		dL_dcolors2,
 		dL_dshs,
+		dL_dshs2,
 		dL_dmean2Ds,
 		dL_dmean3Ds,
 		dL_dscales,
@@ -690,8 +774,12 @@ void BACKWARD::render(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
+	const float* phases, 
 	const float4* normal_opacity,
 	const float* colors,
+	const float* colors2,
 	const float* transMats,
 	const float* depths,
 	const float* final_Ts,
@@ -702,7 +790,11 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dcolors)
+	float* dL_dweights_for_frequency_angle, 
+	float* dL_dfrequency_lengths, 
+	float* dL_dphases, 
+	float* dL_dcolors, 
+	float* dL_dcolors2)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
@@ -711,9 +803,13 @@ void BACKWARD::render(
 		focal_x, focal_y,
 		bg_color,
 		means2D,
+		weights_for_frequency_angle, 
+		frequency_lengths, 
+		phases, 
 		normal_opacity,
 		transMats,
 		colors,
+		colors2,
 		depths,
 		final_Ts,
 		n_contrib,
@@ -723,6 +819,10 @@ void BACKWARD::render(
 		dL_dmean2D,
 		dL_dnormal3D,
 		dL_dopacity,
-		dL_dcolors
+		dL_dweights_for_frequency_angle, 
+		dL_dfrequency_lengths, 
+		dL_dphases, 
+		dL_dcolors, 
+		dL_dcolors2
 		);
 }

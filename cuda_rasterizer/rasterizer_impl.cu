@@ -159,9 +159,13 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
+	obtain(chunk, geom.weights_for_frequency_angle, P * F, 128);
+	obtain(chunk, geom.frequency_lengths, P * F, 128);
+	obtain(chunk, geom.phases, P * F, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
+	obtain(chunk, geom.rgb2, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
@@ -203,8 +207,13 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
+	const float* phases, 
 	const float* shs,
+	const float* shs2,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* opacities,
 	const float* scales,
 	const float scale_modifier,
@@ -249,14 +258,19 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
+		weights_for_frequency_angle, 
+		frequency_lengths, 
+		phases, 
 		(glm::vec2*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
 		opacities,
 		shs,
+		shs2,
 		geomState.clamped,
 		transMat_precomp,
 		colors_precomp,
+		colors_precomp2,
 		viewmatrix, projmatrix,
 		(glm::vec3*)cam_pos,
 		width, height,
@@ -264,9 +278,13 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
+		geomState.weights_for_frequency_angle, 
+		geomState.frequency_lengths, 
+		geomState.phases, 
 		geomState.depths,
 		geomState.transMat,
 		geomState.rgb,
+		geomState.rgb2,
 		geomState.normal_opacity,
 		tile_grid,
 		geomState.tiles_touched,
@@ -320,6 +338,7 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
+	const float* feature_ptr2 = colors_precomp2 != nullptr ? colors_precomp2 : geomState.rgb2;
 	const float* transMat_ptr = transMat_precomp != nullptr ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(FORWARD::render(
 		tile_grid, block,
@@ -328,7 +347,11 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		geomState.means2D,
+		geomState.weights_for_frequency_angle, 
+		geomState.frequency_lengths, 
+		geomState.phases, 
 		feature_ptr,
+		feature_ptr2,
 		transMat_ptr,
 		geomState.depths,
 		geomState.normal_opacity,
@@ -348,8 +371,13 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
+	const float* weights_for_frequency_angle, 
+	const float* frequency_lengths, 
+	const float* phases, 
 	const float* shs,
+	const float* shs2,
 	const float* colors_precomp,
+	const float* colors_precomp2,
 	const float* scales,
 	const float scale_modifier,
 	const float* rotations,
@@ -367,10 +395,15 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
+	float* dL_dweights_for_frequency_angle, 
+	float* dL_dfrequency_lengths, 
+	float* dL_dphases, 
 	float* dL_dcolor,
+	float* dL_dcolor2,
 	float* dL_dmean3D,
 	float* dL_dtransMat,
 	float* dL_dsh,
+	float* dL_dsh2,
 	float* dL_dscale,
 	float* dL_drot,
 	bool debug)
@@ -394,6 +427,7 @@ void CudaRasterizer::Rasterizer::backward(
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
 	// If we were given precomputed colors and not SHs, use them.
 	const float* color_ptr = (colors_precomp != nullptr) ? colors_precomp : geomState.rgb;
+	const float* color_ptr2 = (colors_precomp2 != nullptr) ? colors_precomp2 : geomState.rgb2;
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	CHECK_CUDA(BACKWARD::render(
@@ -405,8 +439,12 @@ void CudaRasterizer::Rasterizer::backward(
 		focal_x, focal_y,
 		background,
 		geomState.means2D,
+		geomState.weights_for_frequency_angle, 
+		geomState.frequency_lengths, 
+		geomState.phases, 
 		geomState.normal_opacity,
 		color_ptr,
+		color_ptr2,
 		transMat_ptr,
 		depth_ptr,
 		imgState.accum_alpha,
@@ -417,7 +455,11 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)dL_dmean2D,
 		dL_dnormal,
 		dL_dopacity,
-		dL_dcolor), debug)
+		dL_dweights_for_frequency_angle, 
+		dL_dfrequency_lengths, 
+		dL_dphases, 
+		dL_dcolor, 
+		dL_dcolor2), debug)
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
@@ -427,6 +469,7 @@ void CudaRasterizer::Rasterizer::backward(
 		(float3*)means3D,
 		radii,
 		shs,
+		shs2,
 		geomState.clamped,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
@@ -441,7 +484,9 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dnormal,		     // gradient inputs
 		dL_dtransMat,
 		dL_dcolor,
+		dL_dcolor2,
 		dL_dsh,
+		dL_dsh2,
 		(glm::vec3*)dL_dmean3D,
 		(glm::vec2*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)

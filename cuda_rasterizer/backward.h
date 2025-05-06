@@ -28,9 +28,13 @@ namespace BACKWARD
 		float focal_x, float focal_y,
 		const float* bg_color,
 		const float2* means2D,
+		const float* weights_for_frequency_angle, 
+		const float* frequency_lengths, 
+		const float* phases, 
 		const float4* normal_opacity,
 		const float* transMats,
 		const float* colors,
+		const float* colors2,
 		const float* depths,
 		const float* final_Ts,
 		const uint32_t* n_contrib,
@@ -40,13 +44,18 @@ namespace BACKWARD
 		float3* dL_dmean2D,
 		float* dL_dnormal3D,
 		float* dL_dopacity,
-		float* dL_dcolors);
+		float* dL_dweights_for_frequency_angle, 
+		float* dL_dfrequency_lengths, 
+		float* dL_dphases, 
+		float* dL_dcolors, 
+		float* dL_dcolors2);
 
 	void preprocess(
 		int P, int D, int M,
 		const float3* means,
 		const int* radii,
 		const float* shs,
+		const float* shs2,
 		const bool* clamped,
 		const glm::vec2* scales,
 		const glm::vec4* rotations,
@@ -61,7 +70,9 @@ namespace BACKWARD
 		const float* dL_dnormal3D,
 		float* dL_dtransMat,
 		float* dL_dcolor,
+		float* dL_dcolor2,
 		float* dL_dsh,
+		float* dL_dsh2,
 		glm::vec3* dL_dmeans,
 		glm::vec2* dL_dscale,
 		glm::vec4* dL_drot);
