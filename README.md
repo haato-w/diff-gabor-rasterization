@@ -5,7 +5,7 @@ This is the rasterization engine for the paper "3D Gabor Splatting: Reconstructi
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
     <h2 class="title">BibTeX</h2>
-    <pre><code>@inproceedings{watanabe3dgabors,
+    <pre><code>@inproceedings{watanabe3Dgabors,
       title     = {3D Gabor Splatting: Reconstruction of High-frequency Surface Texture using Gabor Noise},
       author    = {Haato Watanabe, Kenji Tojo and Nobuyuki Umetani},
       publisher = {Eurographics Association}, 
