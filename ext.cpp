@@ -19,6 +19,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rasterize_gabors_backward", &RasterizeGaborsBackwardCUDA);
   m.def("rasterize_gabors_fused", &RasterizeGaborsFusedCUDA);
   m.def("rasterize_gabors_bounded", &RasterizeGaborsBoundedCUDA);
+  m.def("rasterize_gabors_culled", &RasterizeGaborsCulledCUDA);
   m.def("rasterize_gabors_backward_fused", &RasterizeGaborsBackwardFusedCUDA);
   m.def("mark_visible", &markVisible);
   m.def("set_profiling_enabled", &CudaRasterizer::Profiling::setEnabled);

@@ -11,6 +11,8 @@
 
 #include "forward.h"
 #include "auxiliary.h"
+#include "tile_culling.h"
+#include <type_traits>
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
@@ -114,33 +116,38 @@ __device__ void compute_transmat(
 
 }
 
-// Computing the bounding box of the 2D Gaussian and its center
-// The center of the bounding box is used to create a low pass filter
+// Fix rounding for this legacy AABB expression across kernel specializations.
+// Otherwise support construction can change compiler FMA contraction/CSE and
+// subtly move the low-pass filter center when tile culling is enabled.
+__forceinline__ __device__ glm::vec3 aabb_product(const glm::vec3 a, const glm::vec3 b)
+{
+	return glm::vec3(__fmul_rn(a.x, b.x), __fmul_rn(a.y, b.y), __fmul_rn(a.z, b.z));
+}
+
+__forceinline__ __device__ float aabb_dot(const glm::vec3 a, const glm::vec3 b)
+{
+	return __fadd_rn(__fadd_rn(__fmul_rn(a.x, b.x), __fmul_rn(a.y, b.y)), __fmul_rn(a.z, b.z));
+}
+
+// Computing the bounding box of the 2D Gaussian and its center.
+// The center of the bounding box is used to create a low pass filter.
 __device__ bool compute_aabb(
-	glm::mat3 T, 
+	glm::mat3 T,
 	float cutoff,
 	float2& point_image,
 	float2& extent
 ) {
-	glm::vec3 t = glm::vec3(cutoff * cutoff, cutoff * cutoff, -1.0f);
-	float d = glm::dot(t, T[2] * T[2]);
-	if (d == 0.0) return false;
-	glm::vec3 f = (1 / d) * t;
-
-	glm::vec2 p = glm::vec2(
-		glm::dot(f, T[0] * T[2]),
-		glm::dot(f, T[1] * T[2])
-	);
-
-	glm::vec2 h0 = p * p - 
-		glm::vec2(
-			glm::dot(f, T[0] * T[0]),
-			glm::dot(f, T[1] * T[1])
-		);
-
-	glm::vec2 h = sqrt(max(glm::vec2(1e-4, 1e-4), h0));
-	point_image = {p.x, p.y};
-	extent = {h.x, h.y};
+	const glm::vec3 t = glm::vec3(__fmul_rn(cutoff, cutoff), __fmul_rn(cutoff, cutoff), -1.0f);
+	const float d = aabb_dot(t, aabb_product(T[2], T[2]));
+	if (d == 0.0f) return false;
+	const float inv_d = __fdiv_rn(1.0f, d);
+	const glm::vec3 f = aabb_product(glm::vec3(inv_d), t);
+	const float px = aabb_dot(f, aabb_product(T[0], T[2]));
+	const float py = aabb_dot(f, aabb_product(T[1], T[2]));
+	const float hx = __fsub_rn(__fmul_rn(px, px), aabb_dot(f, aabb_product(T[0], T[0])));
+	const float hy = __fsub_rn(__fmul_rn(py, py), aabb_dot(f, aabb_product(T[1], T[1])));
+	point_image = {px, py};
+	extent = {sqrtf(fmaxf(1.0e-4f, hx)), sqrtf(fmaxf(1.0e-4f, hy))};
 	return true;
 }
 
@@ -237,7 +244,7 @@ __device__ void tighten_tile_rect(
 
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
-__global__ void preprocessCUDA(int P, int D, int M,
+__device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	const float* orig_points,
 	const float* weights_for_frequency_angle, 
 	const float* frequency_lengths, 
@@ -278,7 +285,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	bool split_sh,
 	bool raw_inputs,
 	uint4* tile_bounds,
-	bool tight_bbox)
+	bool tight_bbox,
+	TileSupport* tile_supports,
+	bool tile_culling)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -289,6 +298,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
 	tile_bounds[idx] = make_uint4(0, 0, 0, 0);
+	if (tile_culling) tile_supports[idx] = unrestricted_tile_support();
 
 	// Perform near culling, quit if outside.
 	float3 p_view;
@@ -350,6 +360,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	if (tight_bbox)
 		tighten_tile_rect(T, opacity, point_image, grid, rect_min, rect_max);
 	tile_bounds[idx] = make_uint4(rect_min.x, rect_min.y, rect_max.x, rect_max.y);
+	if (tile_culling) tile_supports[idx] = make_tile_support(T, opacity, point_image);
 
 	// Compute colors 
 	if (colors_precomp == nullptr) {
@@ -377,6 +388,77 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	points_xy_image[idx] = point_image;
 	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacity};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
+}
+
+template<int C, bool TileCulling, bool LoadBalance>
+__global__ void preprocessCUDA(int P, int D, int M,
+	const float* orig_points,
+	const float* weights_for_frequency_angle,
+	const float* frequency_lengths,
+	const float* phases,
+	const int F,
+	const glm::vec2* scales,
+	const float scale_modifier,
+	const glm::vec4* rotations,
+	const float* opacities,
+	const float* shs,
+	const float* shs2,
+	bool* clamped,
+	bool* clamped2,
+	const float* transMat_precomp,
+	const float* colors_precomp,
+	const float* colors_precomp2,
+	const float* viewmatrix,
+	const float* projmatrix,
+	const glm::vec3* cam_pos,
+	const int W, int H,
+	const float tan_fovx, const float tan_fovy,
+	const float focal_x, const float focal_y,
+	int* radii,
+	float2* points_xy_image,
+	float* geo_weights_for_frequency_angle,
+	float* geo_frequency_lengths,
+	float* geo_phases,
+	float* depths,
+	float* transMats,
+	float* rgb,
+	float* rgb2,
+	float4* normal_opacity,
+	const dim3 grid,
+	uint32_t* tiles_touched,
+	bool prefiltered,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs,
+	uint4* tile_bounds,
+	bool tight_bbox,
+	TileSupport* tile_supports,
+	bool /*tile_culling*/,
+	bool /*load_balance*/,
+	int tile_culling_threshold)
+{
+	preprocessPrimitive<C>(
+		P, D, M, orig_points, weights_for_frequency_angle, frequency_lengths,
+		phases, F, scales, scale_modifier, rotations, opacities, shs, shs2,
+		clamped, clamped2, transMat_precomp, colors_precomp, colors_precomp2,
+		viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, focal_x,
+		focal_y, radii, points_xy_image, geo_weights_for_frequency_angle,
+		geo_frequency_lengths, geo_phases, depths, transMats, rgb, rgb2,
+		normal_opacity, grid, tiles_touched, prefiltered, shs_rest, shs2_rest,
+		split_sh, raw_inputs, tile_bounds, tight_bbox, tile_supports, TileCulling);
+	// Early exits live inside the per-primitive routine. Every lane still enters
+	// enumeration, so partially occupied warps safely assist heavy primitives.
+	if (TileCulling)
+	{
+		const uint32_t idx = cg::this_grid().thread_rank();
+		const bool active = idx < P && radii[idx] > 0;
+		const uint4 bounds = active ? tile_bounds[idx] : make_uint4(0, 0, 0, 0);
+		const TileSupport support = active ? tile_supports[idx] : unrestricted_tile_support();
+		const uint32_t count = enumerate_tiles<false>(idx, bounds, support, 0.0f,
+			0, grid.x, active, true, LoadBalance, tile_culling_threshold);
+		if (idx < P) tiles_touched[idx] = count;
+	}
 }
 
 // Main rasterization method. Collaboratively works on one tile per
@@ -687,9 +769,15 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool split_sh,
 	bool raw_inputs,
 	uint4* tile_bounds,
-	bool tight_bbox)
+	bool tight_bbox,
+	TileSupport* tile_supports,
+	bool tile_culling,
+	bool load_balance,
+	int tile_culling_threshold)
 {
-	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
+	auto launch = [&](auto culling_mode, auto balance_mode)
+	{
+		preprocessCUDA<NUM_CHANNELS, decltype(culling_mode)::value, decltype(balance_mode)::value> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		weights_for_frequency_angle, 
@@ -731,6 +819,21 @@ void FORWARD::preprocess(int P, int D, int M,
 		split_sh,
 		raw_inputs,
 		tile_bounds,
-		tight_bbox
+		tight_bbox,
+		tile_supports,
+		tile_culling,
+		load_balance,
+		tile_culling_threshold
 		);
+	};
+	if (tile_culling)
+	{
+		if (load_balance) launch(std::true_type{}, std::true_type{});
+		else launch(std::true_type{}, std::false_type{});
+	}
+	else
+	{
+		if (load_balance) launch(std::false_type{}, std::true_type{});
+		else launch(std::false_type{}, std::false_type{});
+	}
 }

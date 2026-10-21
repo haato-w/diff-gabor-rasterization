@@ -68,12 +68,17 @@ class _RasterizeGabors(torch.autograd.Function):
         )
         fused = split_sh or raw_inputs
         native_forward = _C.rasterize_gabors
-        if fused or raster_settings.tight_bbox:
+        culled = raster_settings.tile_culling or raster_settings.load_balance
+        if fused or raster_settings.tight_bbox or culled:
             args += (sh_rest, sh2_rest, split_sh, raw_inputs)
             native_forward = _C.rasterize_gabors_fused
-        if raster_settings.tight_bbox:
-            args += (True,)
+        if raster_settings.tight_bbox or culled:
+            args += (raster_settings.tight_bbox,)
             native_forward = _C.rasterize_gabors_bounded
+        if culled:
+            args += (raster_settings.tile_culling, raster_settings.load_balance,
+                     raster_settings.tile_culling_threshold)
+            native_forward = _C.rasterize_gabors_culled
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -156,6 +161,9 @@ class GaborRasterizationSettings(NamedTuple):
     prefiltered: bool
     debug: bool
     tight_bbox: bool = False
+    tile_culling: bool = False
+    load_balance: bool = False
+    tile_culling_threshold: int = 4
 
 
 class GaborRasterizer(nn.Module):
@@ -182,7 +190,13 @@ class GaborRasterizer(nn.Module):
         logits; CUDA preprocessing performs the activations and their gradients.
         ``raster_settings.tight_bbox`` enables conservative opacity-dependent
         tile bounds independently of either input-fusion option.
+        ``tile_culling`` rejects tiles outside the projected surfel and filter
+        support. ``load_balance`` cooperatively processes large tile rectangles;
+        ``tile_culling_threshold`` controls the first 0 to 32 tiles per thread.
         """
+        threshold = self.raster_settings.tile_culling_threshold
+        if type(threshold) is not int or not 0 <= threshold <= 32:
+            raise ValueError("tile_culling_threshold must be an integer between 0 and 32")
         if (shs is None) == (colors_precomp is None):
             raise ValueError("Please provide exactly one of either SHs or precomputed colors!")
         if (shs2 is None) == (colors_precomp2 is None):

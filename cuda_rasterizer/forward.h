@@ -18,6 +18,8 @@
 #define GLM_FORCE_CUDA
 #include <glm/glm.hpp>
 
+struct TileSupport;
+
 namespace FORWARD
 {
 	// Perform initial steps for each Gaussian prior to rasterization.
@@ -64,7 +66,11 @@ namespace FORWARD
 		bool split_sh,
 		bool raw_inputs,
 		uint4* tile_bounds,
-		bool tight_bbox);
+		bool tight_bbox,
+		TileSupport* tile_supports,
+		bool tile_culling,
+		bool load_balance,
+		int tile_culling_threshold);
 
 	// Main rasterization method.
 	void render(

@@ -12,7 +12,27 @@
 from setuptools import setup
 from torch.utils.cpp_extension import CUDAExtension, BuildExtension
 import os
+from pathlib import Path
 os.path.dirname(os.path.abspath(__file__))
+
+
+class HeaderAwareBuildExtension(BuildExtension):
+    def build_extensions(self):
+        # Some supported PyTorch versions emit a Ninja CUDA depfile rule without
+        # telling nvcc to generate that file. A stale GeometryState/TileSupport
+        # layout across translation units can then corrupt GPU memory. Invalidate
+        # this extension's derived objects when any local CUDA header changes.
+        source_root = Path(__file__).resolve().parent
+        headers = list((source_root / "cuda_rasterizer").glob("*.h"))
+        headers += list((source_root / "cuda_rasterizer").glob("*.cuh"))
+        headers.append(source_root / "rasterize_points.h")
+        objects = list(Path(self.build_temp).rglob("*.o"))
+        newest_header = max(header.stat().st_mtime_ns for header in headers)
+        if any(obj.stat().st_mtime_ns < newest_header for obj in objects):
+            for obj in objects:
+                obj.unlink()
+        super().build_extensions()
+
 
 setup(
     name="diff_gabor_rasterization",
@@ -31,6 +51,6 @@ setup(
             extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})
         ],
     cmdclass={
-        'build_ext': BuildExtension
+        'build_ext': HeaderAwareBuildExtension
     }
 )

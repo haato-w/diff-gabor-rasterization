@@ -16,6 +16,8 @@
 #include "rasterizer.h"
 #include <cuda_runtime_api.h>
 
+struct TileSupport;
+
 namespace CudaRasterizer
 {
 	template <typename T>
@@ -46,6 +48,8 @@ namespace CudaRasterizer
 		uint32_t* tiles_touched;
 		// Tile rectangle, stored as (min_x, min_y, max_x, max_y), upper exclusive.
 		uint4* tile_bounds;
+		// Opacity-cutoff projective ellipse and unchanged low-pass disk.
+		TileSupport* tile_supports;
 
 		static GeometryState fromChunk(char*& chunk, size_t P, int F);
 	};

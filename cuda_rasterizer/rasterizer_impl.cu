@@ -14,6 +14,7 @@
 #include <fstream>
 #include <algorithm>
 #include <numeric>
+#include <type_traits>
 #include <cuda.h>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -27,6 +28,7 @@
 namespace cg = cooperative_groups;
 
 #include "auxiliary.h"
+#include "tile_culling.h"
 #include "forward.h"
 #include "backward.h"
 #include "profiling.h"
@@ -68,47 +70,31 @@ __global__ void checkFrustum(int P,
 
 // Generates one key/value pair for all Gaussian / tile overlaps. 
 // Run once per Gaussian (1:N mapping).
+template<bool TileCulling, bool LoadBalance>
 __global__ void duplicateWithKeys(
 	int P,
 	const uint4* tile_bounds,
+	const TileSupport* tile_supports,
 	const float* depths,
 	const uint32_t* offsets,
 	uint64_t* gaussian_keys_unsorted,
 	uint32_t* gaussian_values_unsorted,
-	int* radii,
-	dim3 grid)
+	const int* radii,
+	dim3 grid,
+	bool /*tile_culling*/,
+	bool /*load_balance*/,
+	int tile_culling_threshold)
 {
-	auto idx = cg::this_grid().thread_rank();
-	if (idx >= P)
-		return;
-
-	// Generate no key/value pair for invisible Gaussians
-	if (radii[idx] > 0)
-	{
-		// Find this Gaussian's offset in buffer for writing keys/values.
-		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
-		// Use exactly the rectangle counted in preprocessing. The scalar radius
-		// remains the legacy value used by visibility and densification.
-		const uint4 bounds = tile_bounds[idx];
-
-		// For each tile that the bounding rect overlaps, emit a 
-		// key/value pair. The key is |  tile ID  |      depth      |,
-		// and the value is the ID of the Gaussian. Sorting the values 
-		// with this key yields Gaussian IDs in a list, such that they
-		// are first sorted by tile and then by depth. 
-		for (int y = bounds.y; y < bounds.w; y++)
-		{
-			for (int x = bounds.x; x < bounds.z; x++)
-			{
-				uint64_t key = y * grid.x + x;
-				key <<= 32;
-				key |= *((uint32_t*)&depths[idx]);
-				gaussian_keys_unsorted[off] = key;
-				gaussian_values_unsorted[off] = idx;
-				off++;
-			}
-		}
-	}
+	const uint32_t idx = cg::this_grid().thread_rank();
+	// Do not return individual lanes: inactive lanes assist heavy neighbors.
+	const bool active = idx < P && radii[idx] > 0;
+	const uint4 bounds = active ? tile_bounds[idx] : make_uint4(0, 0, 0, 0);
+	const TileSupport support = active && TileCulling ? tile_supports[idx] : unrestricted_tile_support();
+	const float depth = active ? depths[idx] : 0.0f;
+	const uint32_t offset = active && idx > 0 ? offsets[idx - 1] : 0;
+	enumerate_tiles<true>(idx, bounds, support, depth, offset, grid.x,
+		active, TileCulling, LoadBalance, tile_culling_threshold,
+		gaussian_keys_unsorted, gaussian_values_unsorted);
 }
 
 // Check keys to see if it is at the start/end of one tile's range in 
@@ -170,6 +156,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.rgb2, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
 	obtain(chunk, geom.tile_bounds, P, 128);
+	obtain(chunk, geom.tile_supports, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
@@ -237,7 +224,10 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* shs2_rest,
 	bool split_sh,
 	bool raw_inputs,
-	bool tight_bbox)
+	bool tight_bbox,
+	bool tile_culling,
+	bool load_balance,
+	int tile_culling_threshold)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -309,7 +299,11 @@ int CudaRasterizer::Rasterizer::forward(
 		split_sh,
 		raw_inputs,
 		geomState.tile_bounds,
-		tight_bbox
+		tight_bbox,
+		geomState.tile_supports,
+		tile_culling,
+		load_balance,
+		tile_culling_threshold
 	), debug)
 	preprocess_timing.stop();
 
@@ -334,15 +328,32 @@ int CudaRasterizer::Rasterizer::forward(
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
 	Profiling::Scope duplicate_timing("forward.duplicate");
-	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
+	auto launch_duplicate = [&](auto culling_mode, auto balance_mode)
+	{
+		duplicateWithKeys<decltype(culling_mode)::value, decltype(balance_mode)::value> << <(P + 255) / 256, 256 >> > (
 		P,
 		geomState.tile_bounds,
+		geomState.tile_supports,
 		geomState.depths,
 		geomState.point_offsets,
 		binningState.point_list_keys_unsorted,
 		binningState.point_list_unsorted,
 		radii,
-		tile_grid)
+		tile_grid,
+		tile_culling,
+		load_balance,
+		tile_culling_threshold);
+	};
+	if (tile_culling)
+	{
+		if (load_balance) launch_duplicate(std::true_type{}, std::true_type{});
+		else launch_duplicate(std::true_type{}, std::false_type{});
+	}
+	else
+	{
+		if (load_balance) launch_duplicate(std::false_type{}, std::true_type{});
+		else launch_duplicate(std::false_type{}, std::false_type{});
+	}
 	CHECK_CUDA(, debug)
 	duplicate_timing.stop();
 

@@ -65,7 +65,10 @@ namespace CudaRasterizer
 			const float* shs2_rest = nullptr,
 			bool split_sh = false,
 			bool raw_inputs = false,
-			bool tight_bbox = false);
+			bool tight_bbox = false,
+			bool tile_culling = false,
+			bool load_balance = false,
+			int tile_culling_threshold = 4);
 
 		static void backward(
 			const int P, int D, int M, int R,
