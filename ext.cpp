@@ -10,10 +10,14 @@
  */
 
 #include <torch/extension.h>
+#include <pybind11/stl.h>
 #include "rasterize_points.h"
+#include "cuda_rasterizer/profiling.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rasterize_gabors", &RasterizeGaborsCUDA);
   m.def("rasterize_gabors_backward", &RasterizeGaborsBackwardCUDA);
   m.def("mark_visible", &markVisible);
+  m.def("set_profiling_enabled", &CudaRasterizer::Profiling::setEnabled);
+  m.def("collect_profiling", &CudaRasterizer::Profiling::collect);
 }

@@ -17,6 +17,16 @@ from . import _C
 import numpy as np
 from matplotlib import pyplot as plt
 
+def set_profiling_enabled(enabled: bool):
+    """Opt into CUDA stage events; rebuild the extension to add this API."""
+    _C.set_profiling_enabled(bool(enabled))
+
+
+def collect_profiling() -> dict:
+    """Drain CUDA stage timings in milliseconds, summing repeated stage names."""
+    return _C.collect_profiling()
+
+
 def cpu_deep_copy_tuple(input_tuple):
     copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
     return tuple(copied_tensors)

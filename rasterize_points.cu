@@ -20,6 +20,7 @@
 #include <memory>
 #include "cuda_rasterizer/config.h"
 #include "cuda_rasterizer/rasterizer.h"
+#include "cuda_rasterizer/profiling.h"
 #include <fstream>
 #include <string>
 #include <functional>
@@ -93,6 +94,7 @@ RasterizeGaborsCUDA(
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
+  CudaRasterizer::Profiling::Scope allocate_timing("forward.allocate");
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
@@ -105,6 +107,7 @@ RasterizeGaborsCUDA(
   std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
   std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
+  allocate_timing.stop();
   
   int rendered = 0;
   if(P != 0)
@@ -212,6 +215,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	M = sh.size(1);
   }
 
+  CudaRasterizer::Profiling::Scope allocate_timing("backward.allocate");
   torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
@@ -229,6 +233,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 
 	auto float_opts = means3D.options().dtype(torch::kFloat32);
   torch::Tensor d_image = torch::full({1, 1, 1}, 0.0, float_opts);
+  allocate_timing.stop();
   
   if(P != 0)
   {  
