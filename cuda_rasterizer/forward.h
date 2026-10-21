@@ -70,7 +70,9 @@ namespace FORWARD
 		TileSupport* tile_supports,
 		bool tile_culling,
 		bool load_balance,
-		int tile_culling_threshold);
+		int tile_culling_threshold,
+		bool warp_culling,
+		float4* pixel_bounds);
 
 	// Main rasterization method.
 	void render(
@@ -100,7 +102,9 @@ namespace FORWARD
 		uint32_t* tile_max_contrib,
 		float4* bucket_color_T,
 		float4* bucket_depth_normal,
-		float2* bucket_moments);
+		float2* bucket_moments,
+		bool warp_culling,
+		const float4* pixel_bounds);
 }
 
 

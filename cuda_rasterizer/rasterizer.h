@@ -69,7 +69,8 @@ namespace CudaRasterizer
 			bool tile_culling = false,
 			bool load_balance = false,
 			int tile_culling_threshold = 4,
-			bool gaussian_backward = false);
+			bool gaussian_backward = false,
+			bool warp_culling = false);
 
 		static void backward(
 			const int P, int D, int M, int R,

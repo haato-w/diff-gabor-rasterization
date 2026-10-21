@@ -262,15 +262,21 @@ int CudaRasterizer::Rasterizer::forward(
 	bool tile_culling,
 	bool load_balance,
 	int tile_culling_threshold,
-	bool gaussian_backward)
+	bool gaussian_backward,
+	bool warp_culling)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
 
 	Profiling::Scope allocate_timing("forward.allocate");
 	size_t chunk_size = required<GeometryState>(P, F);
+	// Forward-only bounds follow the established geometry layout. Backward can
+	// reconstruct its unchanged state and ignore these trailing checkpoints.
+	if (warp_culling) chunk_size += size_t(P) * sizeof(float4) + 128;
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, F);
+	float4* pixel_bounds = nullptr;
+	if (warp_culling) obtain(chunkptr, pixel_bounds, P, 128);
 
 	if (radii == nullptr)
 	{
@@ -338,7 +344,9 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.tile_supports,
 		tile_culling,
 		load_balance,
-		tile_culling_threshold
+		tile_culling_threshold,
+		warp_culling,
+		pixel_bounds
 	), debug)
 	preprocess_timing.stop();
 
@@ -463,7 +471,9 @@ int CudaRasterizer::Rasterizer::forward(
 		bucketState.tile_max_contrib,
 		bucketState.color_T,
 		bucketState.depth_normal,
-		bucketState.moments), debug)
+		bucketState.moments,
+		warp_culling,
+		pixel_bounds), debug)
 	render_timing.stop();
 
 	return num_rendered;

@@ -196,14 +196,21 @@ __forceinline__ __device__ uint32_t bound_tile(
 
 __device__ void tighten_tile_rect(
 	const glm::mat3 T, const float opacity, const float2 legacy_center,
-	const dim3 grid, uint2& rect_min, uint2& rect_max)
+	const dim3 grid, uint2& rect_min, uint2& rect_max,
+	const bool tight_bbox, float4* pixel_bounds)
 {
+	// Unstable projective geometry retains the entire original tile rectangle.
+	// Bounds use inclusive integer pixel centers, unlike Faster-GS's +0.5 grid.
+	if (pixel_bounds)
+		*pixel_bounds = make_float4(rect_min.x * BLOCK_X, rect_min.y * BLOCK_Y,
+			rect_max.x * BLOCK_X - 1, rect_max.y * BLOCK_Y - 1);
 	if (!isfinite(opacity) || !isfinite(legacy_center.x) || !isfinite(legacy_center.y)) return;
 	if (opacity < 1.0f / 255.0f)
 	{
 		// Preserve the legacy scalar radius/visibility even when no pixel can
 		// contribute. Only the duplication rectangle becomes empty.
-		rect_max = rect_min;
+		if (tight_bbox) rect_max = rect_min;
+		if (pixel_bounds) *pixel_bounds = make_float4(0.0f, 0.0f, -1.0f, -1.0f);
 		return;
 	}
 
@@ -233,6 +240,8 @@ __device__ void tighten_tile_rect(
 	y_min = fminf(y_min, legacy_center.y - filter_radius);
 	y_max = fmaxf(y_max, legacy_center.y + filter_radius);
 	if (!isfinite(x_min) || !isfinite(x_max) || !isfinite(y_min) || !isfinite(y_max)) return;
+	if (pixel_bounds) *pixel_bounds = make_float4(x_min, y_min, x_max, y_max);
+	if (!tight_bbox) return;
 
 	// Intersect with the baseline rectangle: high opacities can have a cutoff
 	// larger than 3 sigma, and must not introduce new baseline contributions.
@@ -287,7 +296,9 @@ __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	uint4* tile_bounds,
 	bool tight_bbox,
 	TileSupport* tile_supports,
-	bool tile_culling)
+	bool tile_culling,
+	bool warp_culling,
+	float4* pixel_bounds)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -357,8 +368,9 @@ __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	getRect(point_image, radius, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
-	if (tight_bbox)
-		tighten_tile_rect(T, opacity, point_image, grid, rect_min, rect_max);
+	if (tight_bbox || warp_culling)
+		tighten_tile_rect(T, opacity, point_image, grid, rect_min, rect_max,
+			tight_bbox, warp_culling ? pixel_bounds + idx : nullptr);
 	tile_bounds[idx] = make_uint4(rect_min.x, rect_min.y, rect_max.x, rect_max.y);
 	if (tile_culling) tile_supports[idx] = make_tile_support(T, opacity, point_image);
 
@@ -436,7 +448,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	TileSupport* tile_supports,
 	bool /*tile_culling*/,
 	bool /*load_balance*/,
-	int tile_culling_threshold)
+	int tile_culling_threshold,
+	bool warp_culling,
+	float4* pixel_bounds)
 {
 	preprocessPrimitive<C>(
 		P, D, M, orig_points, weights_for_frequency_angle, frequency_lengths,
@@ -446,7 +460,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		focal_y, radii, points_xy_image, geo_weights_for_frequency_angle,
 		geo_frequency_lengths, geo_phases, depths, transMats, rgb, rgb2,
 		normal_opacity, grid, tiles_touched, prefiltered, shs_rest, shs2_rest,
-		split_sh, raw_inputs, tile_bounds, tight_bbox, tile_supports, TileCulling);
+		split_sh, raw_inputs, tile_bounds, tight_bbox, tile_supports, TileCulling,
+		warp_culling, pixel_bounds);
 	// Early exits live inside the per-primitive routine. Every lane still enters
 	// enumeration, so partially occupied warps safely assist heavy primitives.
 	if (TileCulling)
@@ -464,7 +479,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS, bool GaussianBackward>
+template <uint32_t CHANNELS, bool GaussianBackward, bool WarpCulling>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -491,14 +506,23 @@ renderCUDA(
 	uint32_t* __restrict__ tile_max_contrib,
 	float4* __restrict__ bucket_color_T,
 	float4* __restrict__ bucket_depth_normal,
-	float2* __restrict__ bucket_moments)
+	float2* __restrict__ bucket_moments,
+	const float4* __restrict__ pixel_bounds)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
 	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
-	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	const uint32_t thread = block.thread_rank();
+	const uint32_t lane = thread & 31;
+	const uint32_t warp = thread / 32;
+	const uint2 local_pixel = WarpCulling
+		? make_uint2((warp % 2) * 8 + lane % 8, (warp / 2) * 4 + lane / 8)
+		: make_uint2(block.thread_index().x, block.thread_index().y);
+	const uint32_t pixel_slot = local_pixel.y * BLOCK_X + local_pixel.x;
+	uint2 pix = { pix_min.x + local_pixel.x, pix_min.y + local_pixel.y };
+	const uint2 subtile_min = make_uint2(pix_min.x + (warp % 2) * 8, pix_min.y + (warp / 2) * 4);
 	uint32_t pix_id = W * pix.y + pix.x;
 	float2 pixf = { (float)pix.x, (float)pix.y};
 
@@ -531,6 +555,7 @@ renderCUDA(
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
+	__shared__ float4 collected_bounds[WarpCulling ? BLOCK_SIZE : 1];
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -573,24 +598,52 @@ renderCUDA(
 			collected_Tu[block.thread_rank()] = {transMats[9 * coll_id+0], transMats[9 * coll_id+1], transMats[9 * coll_id+2]};
 			collected_Tv[block.thread_rank()] = {transMats[9 * coll_id+3], transMats[9 * coll_id+4], transMats[9 * coll_id+5]};
 			collected_Tw[block.thread_rank()] = {transMats[9 * coll_id+6], transMats[9 * coll_id+7], transMats[9 * coll_id+8]};
+			if (WarpCulling) collected_bounds[thread] = pixel_bounds[coll_id];
 		}
 		block.sync();
 
 		// Iterate over current batch
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		uint32_t pending = 0;
+		for (int j = 0; (WarpCulling || !done) && j < min(BLOCK_SIZE, toDo); j++)
 		{
-			if (GaussianBackward && (j & 31) == 0)
+			// All lanes, including terminated/edge pixels, reach each ballot.
+			// Warp-wide work sharing follows Faster-GS (Apache-2.0; see
+			// THIRD_PARTY_LICENSES/Faster-GS-LICENSE), adapted to 2DGS support.
+			if (WarpCulling && (j & 31) == 0 && __all_sync(0xffffffffu, done)) break;
+			if (GaussianBackward && !done && (j & 31) == 0)
 			{
 				const size_t b = first_bucket + (i * BLOCK_SIZE + j) / 32;
-				const size_t snapshot = b * BLOCK_SIZE + block.thread_rank();
+				const size_t snapshot = b * BLOCK_SIZE + pixel_slot;
 				bucket_color_T[snapshot] = make_float4(C[0], C[1], C[2], T);
 #if RENDER_AXUTILITY
 				bucket_depth_normal[snapshot] = make_float4(D, N[0], N[1], N[2]);
 				bucket_moments[snapshot] = make_float2(M1, M2);
 #endif
 			}
+			if (WarpCulling)
+			{
+				if ((j & 31) == 0)
+				{
+					bool overlaps = false;
+					if (j + lane < min(BLOCK_SIZE, toDo))
+					{
+						const float4 bounds = collected_bounds[j + lane];
+						overlaps = bounds.x <= subtile_min.x + 7 && bounds.z >= subtile_min.x &&
+							bounds.y <= subtile_min.y + 3 && bounds.w >= subtile_min.y;
+					}
+					pending = __ballot_sync(0xffffffffu, overlaps);
+				}
+				if (pending == 0)
+				{
+					j |= 31;
+					continue;
+				}
+				j = (j & ~31) + __ffs(pending) - 1;
+				pending &= pending - 1;
+				if (done) continue;
+			}
 			// Keep track of current position in range
-			contributor++;
+			contributor = i * BLOCK_SIZE + j + 1;
 
 			// Fisrt compute two homogeneous planes, See Eq. (8)
 			const float2 xy = collected_xy[j];
@@ -754,11 +807,13 @@ void FORWARD::render(
 	uint32_t* tile_max_contrib,
 	float4* bucket_color_T,
 	float4* bucket_depth_normal,
-	float2* bucket_moments)
+	float2* bucket_moments,
+	bool warp_culling,
+	const float4* pixel_bounds)
 {
-	auto launch = [&](auto gaussian_mode)
+	auto launch = [&](auto gaussian_mode, auto warp_mode)
 	{
-	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value, decltype(warp_mode)::value> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
@@ -783,10 +838,19 @@ void FORWARD::render(
 		tile_max_contrib,
 		bucket_color_T,
 		bucket_depth_normal,
-		bucket_moments);
+		bucket_moments,
+		pixel_bounds);
 	};
-	if (gaussian_backward) launch(std::true_type{});
-	else launch(std::false_type{});
+	if (gaussian_backward)
+	{
+		if (warp_culling) launch(std::true_type{}, std::true_type{});
+		else launch(std::true_type{}, std::false_type{});
+	}
+	else
+	{
+		if (warp_culling) launch(std::false_type{}, std::true_type{});
+		else launch(std::false_type{}, std::false_type{});
+	}
 }
 
 void FORWARD::preprocess(int P, int D, int M,
@@ -834,7 +898,9 @@ void FORWARD::preprocess(int P, int D, int M,
 	TileSupport* tile_supports,
 	bool tile_culling,
 	bool load_balance,
-	int tile_culling_threshold)
+	int tile_culling_threshold,
+	bool warp_culling,
+	float4* pixel_bounds)
 {
 	auto launch = [&](auto culling_mode, auto balance_mode)
 	{
@@ -884,7 +950,9 @@ void FORWARD::preprocess(int P, int D, int M,
 		tile_supports,
 		tile_culling,
 		load_balance,
-		tile_culling_threshold
+		tile_culling_threshold,
+		warp_culling,
+		pixel_bounds
 		);
 	};
 	if (tile_culling)

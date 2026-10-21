@@ -155,7 +155,8 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 	const bool tile_culling,
 	const bool load_balance,
 	const int tile_culling_threshold,
-	const bool gaussian_backward = false)
+	const bool gaussian_backward = false,
+	const bool warp_culling = false)
 {
   TORCH_CHECK(tile_culling_threshold >= 0 && tile_culling_threshold <= 32,
               "tile_culling_threshold must be between 0 and 32");
@@ -187,7 +188,7 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
   CHECK_INPUT(campos);
 
 
-  if (split_sh || raw_inputs || gaussian_backward) {
+  if (split_sh || raw_inputs || gaussian_backward || warp_culling) {
     checkFusedInputs(means3D, weights_for_frequency_angle, frequency_lengths, phases,
                      F, scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
                      colors, colors2, degree, split_sh, raw_inputs);
@@ -213,7 +214,7 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
                 "viewmatrix and projmatrix must contain 16 elements");
     TORCH_CHECK(campos.numel() == 3, "campos must contain 3 elements");
   }
-  if (split_sh || raw_inputs || gaussian_backward) {
+  if (split_sh || raw_inputs || gaussian_backward || warp_culling) {
     checkTensor(opacity, means3D, "opacity");
     checkShape(opacity, P, 1, "opacity");
     TORCH_CHECK(H > 0 && W > 0, "Image dimensions must be positive");
@@ -275,7 +276,7 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 		debug,
 		split_sh ? sh_rest.data_ptr<float>() : nullptr,
 		split_sh ? sh2_rest.data_ptr<float>() : nullptr,
-		split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward);
+		split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
 }
@@ -724,6 +725,47 @@ RasterizeResult RasterizeGaborsGaussianBackwardCUDA(
 	const bool gaussian_backward) {
   return RasterizeGaborsCUDAImpl(
     background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward);
+}
+
+// Separate export preserves the positional APIs of earlier rasterizers.
+RasterizeResult RasterizeGaborsWarpCulledCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs,
+	const bool tight_bbox,
+	const bool tile_culling,
+	const bool load_balance,
+	const int tile_culling_threshold,
+	const bool gaussian_backward,
+	const bool warp_culling) {
+  return RasterizeGaborsCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling);
 }
 
 RasterizeFusedBackwardResult RasterizeGaborsBackwardGaussianCUDA(

@@ -70,19 +70,23 @@ class _RasterizeGabors(torch.autograd.Function):
         native_forward = _C.rasterize_gabors
         culled = raster_settings.tile_culling or raster_settings.load_balance
         gaussian_backward = raster_settings.gaussian_backward
-        if fused or raster_settings.tight_bbox or culled or gaussian_backward:
+        warp_culling = raster_settings.warp_culling
+        if fused or raster_settings.tight_bbox or culled or gaussian_backward or warp_culling:
             args += (sh_rest, sh2_rest, split_sh, raw_inputs)
             native_forward = _C.rasterize_gabors_fused
-        if raster_settings.tight_bbox or culled or gaussian_backward:
+        if raster_settings.tight_bbox or culled or gaussian_backward or warp_culling:
             args += (raster_settings.tight_bbox,)
             native_forward = _C.rasterize_gabors_bounded
-        if culled or gaussian_backward:
+        if culled or gaussian_backward or warp_culling:
             args += (raster_settings.tile_culling, raster_settings.load_balance,
                      raster_settings.tile_culling_threshold)
             native_forward = _C.rasterize_gabors_culled
-        if gaussian_backward:
+        if gaussian_backward or warp_culling:
             args += (gaussian_backward,)
             native_forward = _C.rasterize_gabors_gaussian_backward
+        if warp_culling:
+            args += (warp_culling,)
+            native_forward = _C.rasterize_gabors_warp_culled
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -173,6 +177,7 @@ class GaborRasterizationSettings(NamedTuple):
     load_balance: bool = False
     tile_culling_threshold: int = 4
     gaussian_backward: bool = False
+    warp_culling: bool = False
 
 
 class GaborRasterizer(nn.Module):
@@ -204,6 +209,8 @@ class GaborRasterizer(nn.Module):
         ``tile_culling_threshold`` controls the first 0 to 32 tiles per thread.
         ``gaussian_backward`` records compositing checkpoints in forward for
         primitive-owned backward accumulation; False retains per-pixel backward.
+        ``warp_culling`` skips a primitive for a whole pixel warp when its
+        conservative projected support misses that warp's pixel rectangle.
         """
         threshold = self.raster_settings.tile_culling_threshold
         if type(threshold) is not int or not 0 <= threshold <= 32:
