@@ -3,7 +3,7 @@
  * GRAPHDECO research group, https://team.inria.fr/graphdeco
  * All rights reserved.
  *
- * This software is free for non-commercial, research and evaluation use 
+ * This software is free for non-commercial, research and evaluation use
  * under the terms of the LICENSE.md file.
  *
  * For inquiries contact  george.drettakis@inria.fr
@@ -21,6 +21,8 @@
 #include "cuda_rasterizer/config.h"
 #include "cuda_rasterizer/rasterizer.h"
 #include "cuda_rasterizer/profiling.h"
+#include "rasterize_points.h"
+#include <c10/cuda/CUDAGuard.h>
 #include <fstream>
 #include <string>
 #include <functional>
@@ -37,14 +39,94 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
-RasterizeGaborsCUDA(
+
+namespace {
+void checkTensor(const torch::Tensor& tensor, const torch::Tensor& reference, const char* name, bool require_contiguous = true) {
+  TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor");
+  TORCH_CHECK(tensor.scalar_type() == torch::kFloat32, name, " must have dtype float32");
+  TORCH_CHECK(!require_contiguous || tensor.is_contiguous(), name, " must be contiguous");
+  TORCH_CHECK(tensor.device() == reference.device(), name, " must be on the same device as means3D");
+}
+
+void checkShape(const torch::Tensor& tensor, int64_t points, int64_t columns, const char* name) {
+  TORCH_CHECK(tensor.dim() == 2 && tensor.size(0) == points && tensor.size(1) == columns,
+              name, " must have shape (", points, ", ", columns, ")");
+}
+
+int shCoefficientCount(const torch::Tensor& sh, const torch::Tensor& sh2,
+                       const torch::Tensor& rest, const torch::Tensor& rest2, bool split_sh) {
+  if (split_sh) {
+    if (rest.dim() == 3) return rest.size(1) + 1;
+    if (rest2.dim() == 3) return rest2.size(1) + 1;
+    return 0;
+  }
+  if (sh.dim() == 3) return sh.size(1);
+  if (sh2.dim() == 3) return sh2.size(1);
+  return 0;
+}
+
+void checkSH(const torch::Tensor& sh, const torch::Tensor& rest, int64_t points,
+             int degree, bool split_sh, const char* name) {
+  // Empty one-dimensional tensors denote the precomputed-color path.
+  if (sh.dim() == 1 && sh.numel() == 0) return;
+  TORCH_CHECK(sh.dim() == 3 && sh.size(0) == points && sh.size(2) == NUM_CHANNELS,
+              name, " must have shape (num_points, coefficients, 3)");
+  const int required = (degree + 1) * (degree + 1);
+  if (split_sh) {
+    TORCH_CHECK(sh.size(1) == 1, name, " DC tensor must have exactly one coefficient");
+    TORCH_CHECK(rest.dim() == 3 && rest.size(0) == points && rest.size(2) == NUM_CHANNELS,
+                name, " rest tensor must have shape (num_points, coefficients - 1, 3)");
+    TORCH_CHECK(rest.size(1) + 1 >= required, name, " has too few SH coefficients for the active degree");
+  } else {
+    TORCH_CHECK(sh.size(1) >= required, name, " has too few SH coefficients for the active degree");
+  }
+}
+
+void checkFusedInputs(const torch::Tensor& means3D, const torch::Tensor& weights,
+                      const torch::Tensor& lengths, const torch::Tensor& phases,
+                      int frequency_count, const torch::Tensor& scales,
+                      const torch::Tensor& rotations, const torch::Tensor& transform,
+                      const torch::Tensor& sh, const torch::Tensor& sh2,
+                      const torch::Tensor& rest, const torch::Tensor& rest2,
+                      const torch::Tensor& colors, const torch::Tensor& colors2,
+                      int degree, bool split_sh, bool raw_inputs) {
+  TORCH_CHECK(degree >= 0 && degree <= 3, "SH degree must be between 0 and 3");
+  TORCH_CHECK(frequency_count >= 1 && frequency_count <= 4, "F must be between 1 and 4");
+  const auto points = means3D.size(0);
+  checkShape(weights, points, frequency_count, "weights_for_frequency_angle");
+  checkShape(lengths, points, frequency_count, "frequency_lengths");
+  checkShape(phases, points, frequency_count, "phases");
+  // A provided transform remains distinct from the empty [0] descriptor
+  // when the scene has no primitives (for example, shape [0, 9]).
+  const bool has_transform = transform.numel() != 0 || transform.dim() > 1;
+  if (raw_inputs || !has_transform) {
+    checkShape(scales, points, 2, "scales");
+    checkShape(rotations, points, 4, "rotations");
+  }
+  TORCH_CHECK(!raw_inputs || !has_transform,
+              "raw_inputs cannot be combined with precomputed transforms");
+  checkSH(sh, rest, points, degree, split_sh, "sh");
+  checkSH(sh2, rest2, points, degree, split_sh, "sh2");
+  const bool first_sh = sh.dim() == 3;
+  const bool second_sh = sh2.dim() == 3;
+  TORCH_CHECK(first_sh != (colors.dim() == 2), "Provide either sh or precomputed colors");
+  TORCH_CHECK(second_sh != (colors2.dim() == 2), "Provide either sh2 or precomputed colors2");
+  if (!first_sh) checkShape(colors, points, NUM_CHANNELS, "colors");
+  if (!second_sh) checkShape(colors2, points, NUM_CHANNELS, "colors2");
+  if (first_sh && second_sh) {
+    TORCH_CHECK(sh.size(1) == sh2.size(1), "Both SH sets must have the same coefficient count");
+    if (split_sh) TORCH_CHECK(rest.size(1) == rest2.size(1), "Both SH rest tensors must have the same coefficient count");
+  }
+}
+} // namespace
+
+static RasterizeResult RasterizeGaborsCUDAImpl(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle, 
-	const torch::Tensor& frequency_lengths, 
-	const torch::Tensor& phases, 
-	const int F, 
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -54,7 +136,7 @@ RasterizeGaborsCUDA(
 	const torch::Tensor& transMat_precomp,
 	const torch::Tensor& viewmatrix,
 	const torch::Tensor& projmatrix,
-	const float tan_fovx, 
+	const float tan_fovx,
 	const float tan_fovy,
 	const int image_height,
 	const int image_width,
@@ -63,13 +145,18 @@ RasterizeGaborsCUDA(
 	const int degree,
 	const torch::Tensor& campos,
 	const bool prefiltered,
-	const bool debug)
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
 	AT_ERROR("means3D must have dimensions (num_points, 3)");
   }
 
-  
+
+  const c10::cuda::CUDAGuard device_guard(means3D.device());
   const int P = means3D.size(0);
   const int H = image_height;
   const int W = image_width;
@@ -91,6 +178,35 @@ RasterizeGaborsCUDA(
   CHECK_INPUT(sh2);
   CHECK_INPUT(campos);
 
+
+  if (split_sh || raw_inputs) {
+    checkFusedInputs(means3D, weights_for_frequency_angle, frequency_lengths, phases,
+                     F, scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
+                     colors, colors2, degree, split_sh, raw_inputs);
+    checkTensor(background, means3D, "background");
+    checkTensor(means3D, means3D, "means3D");
+    checkTensor(weights_for_frequency_angle, means3D, "weights_for_frequency_angle");
+    checkTensor(frequency_lengths, means3D, "frequency_lengths");
+    checkTensor(phases, means3D, "phases");
+    checkTensor(colors, means3D, "colors");
+    checkTensor(colors2, means3D, "colors2");
+    checkTensor(scales, means3D, "scales");
+    checkTensor(rotations, means3D, "rotations");
+    checkTensor(transMat_precomp, means3D, "transMat_precomp");
+    checkTensor(viewmatrix, means3D, "viewmatrix", false);
+    checkTensor(projmatrix, means3D, "projmatrix", false);
+    checkTensor(sh, means3D, "sh");
+    checkTensor(sh2, means3D, "sh2");
+    checkTensor(campos, means3D, "campos", false);
+    checkTensor(sh_rest, means3D, "sh_rest");
+    checkTensor(sh2_rest, means3D, "sh2_rest");
+  }
+  if (split_sh || raw_inputs) {
+    checkTensor(opacity, means3D, "opacity");
+    checkShape(opacity, P, 1, "opacity");
+    TORCH_CHECK(H > 0 && W > 0, "Image dimensions must be positive");
+  }
+
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
@@ -98,7 +214,7 @@ RasterizeGaborsCUDA(
   torch::Tensor out_color = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
   torch::Tensor out_others = torch::full({3+3+1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
-  
+
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
   torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
@@ -108,15 +224,11 @@ RasterizeGaborsCUDA(
   std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
   std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
   allocate_timing.stop();
-  
+
   int rendered = 0;
   if(P != 0)
   {
-	  int M = 0;
-	  if(sh.size(0) != 0)
-	  {
-		M = sh.size(1);
-	  }
+	  const int M = shCoefficientCount(sh, sh2, sh_rest, sh2_rest, split_sh);
 
 	  rendered = CudaRasterizer::Rasterizer::forward(
 		geomFunc,
@@ -126,20 +238,20 @@ RasterizeGaborsCUDA(
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
-		weights_for_frequency_angle.contiguous().data<float>(), 
-		frequency_lengths.contiguous().data<float>(), 
-		phases.contiguous().data<float>(), 
-		F, 
+		weights_for_frequency_angle.contiguous().data<float>(),
+		frequency_lengths.contiguous().data<float>(),
+		phases.contiguous().data<float>(),
+		F,
 		sh.contiguous().data_ptr<float>(),
 		sh2.contiguous().data_ptr<float>(),
-		colors.contiguous().data<float>(), 
-		colors2.contiguous().data<float>(), 
-		opacity.contiguous().data<float>(), 
+		colors.contiguous().data<float>(),
+		colors2.contiguous().data<float>(),
+		opacity.contiguous().data<float>(),
 		scales.contiguous().data_ptr<float>(),
 		scale_modifier,
 		rotations.contiguous().data_ptr<float>(),
-		transMat_precomp.contiguous().data<float>(), 
-		viewmatrix.contiguous().data<float>(), 
+		transMat_precomp.contiguous().data<float>(),
+		viewmatrix.contiguous().data<float>(),
 		projmatrix.contiguous().data<float>(),
 		campos.contiguous().data<float>(),
 		tan_fovx,
@@ -148,19 +260,21 @@ RasterizeGaborsCUDA(
 		out_color.contiguous().data<float>(),
 		out_others.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		split_sh ? sh_rest.data_ptr<float>() : nullptr,
+		split_sh ? sh2_rest.data_ptr<float>() : nullptr,
+		split_sh, raw_inputs);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
 }
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
- RasterizeGaborsBackwardCUDA(
-	 const torch::Tensor& background,
+static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
+	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle, 
-	const torch::Tensor& frequency_lengths, 
-	const torch::Tensor& phases, 
-	const int F, 
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -182,7 +296,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const int R,
 	const torch::Tensor& binningBuffer,
 	const torch::Tensor& imageBuffer,
-	const bool debug) 
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs)
 {
 
   CHECK_INPUT(background);
@@ -205,15 +323,39 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   CHECK_INPUT(imageBuffer);
   CHECK_INPUT(geomBuffer);
 
+  const c10::cuda::CUDAGuard device_guard(means3D.device());
   const int P = means3D.size(0);
   const int H = dL_dout_color.size(1);
   const int W = dL_dout_color.size(2);
-  
-  int M = 0;
-  if(sh.size(0) != 0)
-  {	
-	M = sh.size(1);
+
+
+  if (split_sh || raw_inputs) {
+    checkFusedInputs(means3D, weights_for_frequency_angle, frequency_lengths, phases,
+                     F, scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
+                     colors, colors2, degree, split_sh, raw_inputs);
+    checkTensor(background, means3D, "background");
+    checkTensor(means3D, means3D, "means3D");
+    checkTensor(weights_for_frequency_angle, means3D, "weights_for_frequency_angle");
+    checkTensor(frequency_lengths, means3D, "frequency_lengths");
+    checkTensor(phases, means3D, "phases");
+    checkTensor(colors, means3D, "colors");
+    checkTensor(colors2, means3D, "colors2");
+    checkTensor(scales, means3D, "scales");
+    checkTensor(rotations, means3D, "rotations");
+    checkTensor(transMat_precomp, means3D, "transMat_precomp");
+    checkTensor(viewmatrix, means3D, "viewmatrix", false);
+    checkTensor(projmatrix, means3D, "projmatrix", false);
+    checkTensor(sh, means3D, "sh");
+    checkTensor(sh2, means3D, "sh2");
+    checkTensor(campos, means3D, "campos", false);
+    checkTensor(sh_rest, means3D, "sh_rest");
+    checkTensor(sh2_rest, means3D, "sh2_rest");
   }
+  if (split_sh || raw_inputs) {
+    checkTensor(dL_dout_color, means3D, "dL_dout_color");
+    checkTensor(dL_dout_others, means3D, "dL_dout_others");
+  }
+  const int M = shCoefficientCount(sh, sh2, sh_rest, sh2_rest, split_sh);
 
   CudaRasterizer::Profiling::Scope allocate_timing("backward.allocate");
   torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
@@ -226,25 +368,27 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dfrequency_lengths = torch::zeros({P, F}, means3D.options());
   torch::Tensor dL_dphases = torch::zeros({P, F}, means3D.options());
   torch::Tensor dL_dtransMat = torch::zeros({P, 9}, means3D.options());
-  torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
-  torch::Tensor dL_dsh2 = torch::zeros({P, M, 3}, means3D.options());
+  torch::Tensor dL_dsh = split_sh ? torch::zeros_like(sh) : torch::zeros({P, M, 3}, means3D.options());
+  torch::Tensor dL_dsh2 = split_sh ? torch::zeros_like(sh2) : torch::zeros({P, M, 3}, means3D.options());
+  torch::Tensor dL_dsh_rest = split_sh ? torch::zeros_like(sh_rest) : torch::empty({0}, means3D.options());
+  torch::Tensor dL_dsh2_rest = split_sh ? torch::zeros_like(sh2_rest) : torch::empty({0}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 2}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
 
 	auto float_opts = means3D.options().dtype(torch::kFloat32);
   torch::Tensor d_image = torch::full({1, 1, 1}, 0.0, float_opts);
   allocate_timing.stop();
-  
+
   if(P != 0)
-  {  
+  {
 	  CudaRasterizer::Rasterizer::backward(P, degree, M, R,
 	  background.contiguous().data<float>(),
-	  W, H, 
+	  W, H,
 	  means3D.contiguous().data<float>(),
-	  weights_for_frequency_angle.contiguous().data<float>(), 
-	  frequency_lengths.contiguous().data<float>(), 
-	  phases.contiguous().data<float>(), 
-	  F, 
+	  weights_for_frequency_angle.contiguous().data<float>(),
+	  frequency_lengths.contiguous().data<float>(),
+	  phases.contiguous().data<float>(),
+	  F,
 	  sh.contiguous().data<float>(),
 	  sh2.contiguous().data<float>(),
 	  colors.contiguous().data<float>(),
@@ -265,11 +409,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dout_color.contiguous().data<float>(),
 	  dL_dout_others.contiguous().data<float>(),
 	  dL_dmeans2D.contiguous().data<float>(),
-	  dL_dnormal.contiguous().data<float>(),  
+	  dL_dnormal.contiguous().data<float>(),
 	  dL_dopacity.contiguous().data<float>(),
-	  dL_dweights_for_frequency_angle.contiguous().data<float>(), 
-	  dL_dfrequency_lengths.contiguous().data<float>(), 
-	  dL_dphases.contiguous().data<float>(), 
+	  dL_dweights_for_frequency_angle.contiguous().data<float>(),
+	  dL_dfrequency_lengths.contiguous().data<float>(),
+	  dL_dphases.contiguous().data<float>(),
 	  dL_dcolors.contiguous().data<float>(),
 	  dL_dcolors2.contiguous().data<float>(),
 	  dL_dmeans3D.contiguous().data<float>(),
@@ -279,21 +423,162 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_dscales.contiguous().data<float>(),
 	  dL_drotations.contiguous().data<float>(),
 	  d_image.contiguous().data<float>(),
-	  debug);
+	  debug,
+	  split_sh ? sh_rest.data_ptr<float>() : nullptr,
+	  split_sh ? sh2_rest.data_ptr<float>() : nullptr,
+	  split_sh, raw_inputs,
+	  split_sh ? dL_dsh_rest.data_ptr<float>() : nullptr,
+	  split_sh ? dL_dsh2_rest.data_ptr<float>() : nullptr);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image, dL_dsh_rest, dL_dsh2_rest);
+}
+
+RasterizeResult RasterizeGaborsCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug) {
+  return RasterizeGaborsCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, torch::Tensor(), torch::Tensor(), false, false);
+}
+
+RasterizeResult RasterizeGaborsFusedCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs) {
+  return RasterizeGaborsCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs);
+}
+
+RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& radii,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const torch::Tensor& dL_dout_color,
+	const torch::Tensor& dL_dout_others,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const torch::Tensor& geomBuffer,
+	const int R,
+	const torch::Tensor& binningBuffer,
+	const torch::Tensor& imageBuffer,
+	const bool debug) {
+  auto result = RasterizeGaborsBackwardCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, torch::Tensor(), torch::Tensor(), false, false);
+  return std::make_tuple(
+    std::get<0>(result), std::get<1>(result), std::get<2>(result), std::get<3>(result), std::get<4>(result), std::get<5>(result), std::get<6>(result), std::get<7>(result), std::get<8>(result), std::get<9>(result), std::get<10>(result), std::get<11>(result), std::get<12>(result), std::get<13>(result));
+}
+
+RasterizeFusedBackwardResult RasterizeGaborsBackwardFusedCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& radii,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const torch::Tensor& dL_dout_color,
+	const torch::Tensor& dL_dout_others,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const torch::Tensor& geomBuffer,
+	const int R,
+	const torch::Tensor& binningBuffer,
+	const torch::Tensor& imageBuffer,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs) {
+  return RasterizeGaborsBackwardCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs);
 }
 
 torch::Tensor markVisible(
 		torch::Tensor& means3D,
 		torch::Tensor& viewmatrix,
 		torch::Tensor& projmatrix)
-{ 
+{
   const int P = means3D.size(0);
-  
+
   torch::Tensor present = torch::full({P}, false, means3D.options().dtype(at::kBool));
- 
+
   if(P != 0)
   {
 	CudaRasterizer::Rasterizer::markVisible(P,
@@ -302,6 +587,6 @@ torch::Tensor markVisible(
 		projmatrix.contiguous().data<float>(),
 		present.contiguous().data<bool>());
   }
-  
+
   return present;
 }

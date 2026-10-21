@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const float* shs_rest, bool split_sh, bool* clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -26,7 +26,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	const auto sh = sh_coefficients((const glm::vec3*)shs, (const glm::vec3*)shs_rest, idx, max_coeffs, split_sh);
 	glm::vec3 result = SH_C0 * sh[0];
 
 	if (deg > 0)
@@ -159,6 +159,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* shs,
 	const float* shs2,
 	bool* clamped,
+	bool* clamped2,
 	const float* transMat_precomp,
 	const float* colors_precomp,
 	const float* colors_precomp2,
@@ -180,7 +181,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -204,7 +209,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	float3 normal;
 	if (transMat_precomp == nullptr)
 	{
-		compute_transmat(((float3*)orig_points)[idx], scales[idx], scale_modifier, rotations[idx], projmatrix, viewmatrix, W, H, T, normal);
+		const glm::vec2 scale = raw_inputs ? activate_scale(scales[idx]) : scales[idx];
+		const glm::vec4 rotation = raw_inputs ? activate_rotation(rotations[idx]) : rotations[idx];
+		compute_transmat(((float3*)orig_points)[idx], scale, scale_modifier, rotation, projmatrix, viewmatrix, W, H, T, normal);
 		float3 *T_ptr = (float3*)transMats;
 		T_ptr[idx * 3 + 0] = {T[0][0], T[0][1], T[0][2]};
 		T_ptr[idx * 3 + 1] = {T[1][0], T[1][1], T[1][2]};
@@ -226,9 +233,11 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	normal = multiplier * normal;
 #endif
 
+	const float opacity = raw_inputs ? activate_opacity(opacities[idx]) : opacities[idx];
+
 #if TIGHTBBOX // no use in the paper, but it indeed help speeds.
 	// the effective extent is now depended on the opacity of gaussian.
-	float cutoff = sqrtf(max(9.f + 2.f * logf(opacities[idx]), 0.000001));
+	float cutoff = sqrtf(max(9.f + 2.f * logf(opacity), 0.000001));
 #else
 	float cutoff = 3.0f;
 #endif
@@ -250,13 +259,13 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	// Compute colors 
 	if (colors_precomp == nullptr) {
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, shs_rest, split_sh, clamped);
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
 		rgb[idx * C + 2] = result.z;
 	}
 	if (colors_precomp2 == nullptr) {
-		glm::vec3 result2 = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs2, clamped);
+		glm::vec3 result2 = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs2, shs2_rest, split_sh, clamped2);
 		rgb2[idx * C + 0] = result2.x;
 		rgb2[idx * C + 1] = result2.y;
 		rgb2[idx * C + 2] = result2.z;
@@ -272,7 +281,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
 	points_xy_image[idx] = point_image;
-	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacities[idx]};
+	normal_opacity[idx] = {normal.x, normal.y, normal.z, opacity};
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
@@ -556,6 +565,7 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* shs,
 	const float* shs2,
 	bool* clamped,
+	bool* clamped2,
 	const float* transMat_precomp,
 	const float* colors_precomp,
 	const float* colors_precomp2,
@@ -577,7 +587,11 @@ void FORWARD::preprocess(int P, int D, int M,
 	float4* normal_opacity,
 	const dim3 grid,
 	uint32_t* tiles_touched,
-	bool prefiltered)
+	bool prefiltered,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -593,6 +607,7 @@ void FORWARD::preprocess(int P, int D, int M,
 		shs,
 		shs2,
 		clamped,
+		clamped2,
 		transMat_precomp,
 		colors_precomp,
 		colors_precomp2,
@@ -614,6 +629,10 @@ void FORWARD::preprocess(int P, int D, int M,
 		normal_opacity,
 		grid,
 		tiles_touched,
-		prefiltered
+		prefiltered,
+		shs_rest,
+		shs2_rest,
+		split_sh,
+		raw_inputs
 		);
 }

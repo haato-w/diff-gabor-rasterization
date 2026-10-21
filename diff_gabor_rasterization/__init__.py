@@ -14,8 +14,6 @@ import torch.nn as nn
 import torch
 from . import _C
 
-import numpy as np
-from matplotlib import pyplot as plt
 
 def set_profiling_enabled(enabled: bool):
     """Opt into CUDA stage events; rebuild the extension to add this API."""
@@ -28,293 +26,133 @@ def collect_profiling() -> dict:
 
 
 def cpu_deep_copy_tuple(input_tuple):
-    copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
-    return tuple(copied_tensors)
+    return tuple(item.cpu().clone() if isinstance(item, torch.Tensor) else item
+                 for item in input_tuple)
+
 
 def rasterize_gabors(
-    means3D,
-    means2D,
-    sh,
-    sh2,
-    colors_precomp,
-    colors_precomp2,
-    opacities,
-    weights_for_frequency_angle, 
-    frequency_lengths, 
-    phases, 
-    F, 
-    scales,
-    rotations,
-    cov3Ds_precomp,
-    raster_settings,
+    means3D, means2D, sh, sh2, colors_precomp, colors_precomp2, opacities,
+    weights_for_frequency_angle, frequency_lengths, phases, F, scales,
+    rotations, cov3Ds_precomp, raster_settings, sh_rest=None, sh2_rest=None,
+    raw_inputs=False, split_sh=False,
 ):
+    if sh_rest is None:
+        sh_rest = means3D.new_empty((0,))
+    if sh2_rest is None:
+        sh2_rest = means3D.new_empty((0,))
     return _RasterizeGabors.apply(
-        means3D,
-        means2D,
-        sh,
-        sh2,
-        colors_precomp,
-        colors_precomp2,
-        opacities,
-        weights_for_frequency_angle, 
-        frequency_lengths, 
-        phases, 
-        F, 
-        scales,
-        rotations,
-        cov3Ds_precomp,
-        raster_settings,
+        means3D, means2D, sh, sh2, colors_precomp, colors_precomp2, opacities,
+        weights_for_frequency_angle, frequency_lengths, phases, F, scales,
+        rotations, cov3Ds_precomp, raster_settings, sh_rest, sh2_rest,
+        bool(raw_inputs), bool(split_sh),
     )
+
 
 class _RasterizeGabors(torch.autograd.Function):
     @staticmethod
     def forward(
-        ctx,
-        means3D,
-        means2D,
-        sh,
-        sh2,
-        colors_precomp,
-        colors_precomp2,
-        opacities,
-        weights_for_frequency_angle, 
-        frequency_lengths, 
-        phases, 
-        F, 
-        scales,
-        rotations,
-        cov3Ds_precomp,
-        raster_settings,
+        ctx, means3D, means2D, sh, sh2, colors_precomp, colors_precomp2,
+        opacities, weights_for_frequency_angle, frequency_lengths, phases, F,
+        scales, rotations, cov3Ds_precomp, raster_settings, sh_rest, sh2_rest,
+        raw_inputs, split_sh,
     ):
-        
-        # print("means3D: ", means3D)
-        # print("frequencies: ", frequencies)
-        # print("colors_precomp: ", colors_precomp)
-        # print("colors_precomp2: ", colors_precomp2)
-        # print("opacities: ", opacities)
-        # print("scales: ", scales)
-        # print("rotations: ", rotations)
-
-        # Restructure arguments the way that the C++ lib expects them
         args = (
-            raster_settings.bg, 
-            means3D,
-            weights_for_frequency_angle, 
-            frequency_lengths, 
-            phases, 
-            F, 
-            colors_precomp,
-            colors_precomp2,
-            opacities,
-            scales,
-            rotations,
-            raster_settings.scale_modifier,
-            cov3Ds_precomp,
-            raster_settings.viewmatrix,
-            raster_settings.projmatrix,
-            raster_settings.tanfovx,
-            raster_settings.tanfovy,
-            raster_settings.image_height,
-            raster_settings.image_width,
-            sh,
-            sh2,
-            raster_settings.sh_degree,
-            raster_settings.campos,
-            raster_settings.prefiltered,
-            raster_settings.debug
+            raster_settings.bg, means3D, weights_for_frequency_angle,
+            frequency_lengths, phases, F, colors_precomp, colors_precomp2,
+            opacities, scales, rotations, raster_settings.scale_modifier,
+            cov3Ds_precomp, raster_settings.viewmatrix, raster_settings.projmatrix,
+            raster_settings.tanfovx, raster_settings.tanfovy,
+            raster_settings.image_height, raster_settings.image_width, sh, sh2,
+            raster_settings.sh_degree, raster_settings.campos,
+            raster_settings.prefiltered, raster_settings.debug,
         )
+        fused = split_sh or raw_inputs
+        native_forward = _C.rasterize_gabors
+        if fused:
+            args += (sh_rest, sh2_rest, split_sh, raw_inputs)
+            native_forward = _C.rasterize_gabors_fused
 
-        # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
-            cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
+            cpu_args = cpu_deep_copy_tuple(args)
             try:
-                num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gabors(*args)
-            except Exception as ex:
+                result = native_forward(*args)
+            except Exception:
                 torch.save(cpu_args, "snapshot_fw.dump")
-                print("\nAn error occured in forward. Please forward snapshot_fw.dump for debugging.")
-                raise ex
+                print("\nAn error occurred in forward. Writing snapshot_fw.dump for debugging.")
+                raise
         else:
-            num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = _C.rasterize_gabors(*args)
+            result = native_forward(*args)
+        num_rendered, color, depth, radii, geomBuffer, binningBuffer, imgBuffer = result
 
-        # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.F = F
+        ctx.raw_inputs = raw_inputs
+        ctx.split_sh = split_sh
+        ctx.fused = fused
         ctx.save_for_backward(
-            colors_precomp, 
-            colors_precomp2, 
-            means3D, 
-            weights_for_frequency_angle, 
-            frequency_lengths, 
-            phases, 
-            scales, 
-            rotations, 
-            cov3Ds_precomp, 
-            radii, 
-            sh, 
-            sh2, 
-            geomBuffer, 
-            binningBuffer, 
-            imgBuffer
+            colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle,
+            frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii,
+            sh, sh2, geomBuffer, binningBuffer, imgBuffer, sh_rest, sh2_rest,
         )
         return color, radii, depth
 
     @staticmethod
     def backward(ctx, grad_out_color, grad_radii, grad_depth):
-
-        # Restore necessary values from context
-        F = ctx.F
-        num_rendered = ctx.num_rendered
-        raster_settings = ctx.raster_settings
-        colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle, frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii, sh, sh2, geomBuffer, binningBuffer, imgBuffer = ctx.saved_tensors
-
-        # print("frequencies: \n", frequencies)
-
-        # for debug
-        # print("in backward")
-        # print("frequencies: \n", frequencies)
-        # print("colors_precomp: \n", colors_precomp)
-        # print("colors_precomp2: \n", colors_precomp2)
-        # print("sh: \n", sh)
-        # print("sh2: \n", sh2)
-
-        # Restructure args as C++ method expects them
-        args = (raster_settings.bg,
-                means3D, 
-                weights_for_frequency_angle, 
-                frequency_lengths, 
-                phases, 
-                F, 
-                radii, 
-                colors_precomp, 
-                colors_precomp2, 
-                scales, 
-                rotations, 
-                raster_settings.scale_modifier, 
-                cov3Ds_precomp, 
-                raster_settings.viewmatrix, 
-                raster_settings.projmatrix, 
-                raster_settings.tanfovx, 
-                raster_settings.tanfovy, 
-                grad_out_color,
-                grad_depth,
-                sh, 
-                sh2, 
-                raster_settings.sh_degree, 
-                raster_settings.campos,
-                geomBuffer,
-                num_rendered,
-                binningBuffer,
-                imgBuffer,
-                raster_settings.debug)
-
-        # Compute gradients for relevant tensors by invoking backward method
-        if raster_settings.debug:
-            cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted
+        settings = ctx.raster_settings
+        (colors, colors2, means3D, weights, lengths, phases, scales, rotations,
+         covariance, radii, sh, sh2, geometry, binning, image,
+         sh_rest, sh2_rest) = ctx.saved_tensors
+        # Autograd may provide expanded or strided image gradients.
+        args = (
+            settings.bg, means3D, weights, lengths, phases, ctx.F, radii,
+            colors, colors2, scales, rotations, settings.scale_modifier,
+            covariance, settings.viewmatrix, settings.projmatrix,
+            settings.tanfovx, settings.tanfovy, grad_out_color.contiguous(),
+            grad_depth.contiguous(), sh, sh2, settings.sh_degree, settings.campos,
+            geometry, ctx.num_rendered, binning, image, settings.debug,
+        )
+        native_backward = _C.rasterize_gabors_backward
+        if ctx.fused:
+            args += (sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs)
+            native_backward = _C.rasterize_gabors_backward_fused
+        if settings.debug:
+            cpu_args = cpu_deep_copy_tuple(args)
             try:
-                grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_phases, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
-            except Exception as ex:
+                result = native_backward(*args)
+            except Exception:
                 torch.save(cpu_args, "snapshot_bw.dump")
-                print("\nAn error occured in backward. Writing snapshot_bw.dump for debugging.\n")
-                raise ex
+                print("\nAn error occurred in backward. Writing snapshot_bw.dump for debugging.")
+                raise
         else:
-             grad_means2D, grad_colors_precomp, grad_colors_precomp2, grad_opacities, grad_weights_for_frequency_angle, grad_frequency_lengths, grad_phases, grad_means3D, grad_cov3Ds_precomp, grad_sh, grad_sh2, grad_scales, grad_rotations, d_image = _C.rasterize_gabors_backward(*args)
+            result = native_backward(*args)
 
-        # print("d_image.shape: ", d_image.shape)
-        # save_image = d_image.clone().detach()
-        # save_image = save_image.permute(1, 2, 0)
-        # save_image = save_image.squeeze(-1)
-        # # save_image = save_image * 1000000
-        # print("save_image.shape: ", save_image.shape)
-
-        # # save_image = save_image.clamp(max=1.0, min=0.0)
-        # print("save_image: \n", save_image[200:300, 200:300])
-        # img = save_image.cpu().numpy()
-
-        # max_ = 50
-        # img = (img + max_) / (2 * max_)
-        # img = np.clip(img, a_min = 0, a_max = 1)
-
-        # import matplotlib 
-        # img = matplotlib.colormaps['seismic'](img)[..., :3]
-
-        # plt.imsave("d_image.png", img)
-
-        # grad_frequencies = torch.zeros((grad_means2D.shape[0], 2)).float().cuda() # tmp
-        # grad_colors_precomp2 = torch.zeros(grad_colors_precomp.shape).float().cuda() # tmp
-        # grad_sh2 = torch.zeros(grad_sh.shape).float().cuda() # tmp
-
-        # for debug
-        # print("out backward")
-        # print("grad_frequencies: \n", grad_frequencies)
-        # print("grad_colors_precomp2: \n", grad_colors_precomp2)
-        # print("grad_sh2: \n", grad_sh2)
-
-        # grads = (
-        #     torch.zeros_like(grad_means3D),
-        #     torch.zeros_like(grad_means2D),
-        #     torch.zeros_like(grad_sh),
-        #     torch.zeros_like(grad_sh2),
-        #     torch.zeros_like(grad_colors_precomp),
-        #     torch.zeros_like(grad_colors_precomp2),
-        #     torch.zeros_like(grad_opacities),
-        #     grad_frequencies, 
-        #     torch.zeros_like(grad_scales),
-        #     torch.zeros_like(grad_rotations),
-        #     torch.zeros_like(grad_cov3Ds_precomp),
-        #     None,
-        # )
-
-        # grads = (
-        #     torch.zeros_like(grad_means3D),
-        #     torch.zeros_like(grad_means2D),
-        #     torch.zeros_like(grad_sh),
-        #     torch.zeros_like(grad_sh2),
-        #     torch.zeros_like(grad_colors_precomp),
-        #     torch.zeros_like(grad_colors_precomp2),
-        #     torch.zeros_like(grad_opacities),
-        #     grad_weights_for_frequency, 
-        #     None, 
-        #     None, 
-        #     torch.zeros_like(grad_scales),
-        #     torch.zeros_like(grad_rotations),
-        #     torch.zeros_like(grad_cov3Ds_precomp),
-        #     None,
-        # )
-
-        grads = (
-            grad_means3D,
-            grad_means2D,
-            grad_sh,
-            grad_sh2,
-            grad_colors_precomp,
-            grad_colors_precomp2,
-            grad_opacities,
-            grad_weights_for_frequency_angle, 
-            grad_frequency_lengths, 
-            grad_phases, 
-            None, 
-            grad_scales,
-            grad_rotations,
-            grad_cov3Ds_precomp,
-            None,
+        (grad_means2D, grad_colors, grad_colors2, grad_opacities, grad_weights,
+         grad_lengths, grad_phases, grad_means3D, grad_covariance,
+         grad_sh, grad_sh2, grad_scales, grad_rotations, _) = result[:14]
+        grad_sh_rest, grad_sh2_rest = result[14:] if ctx.split_sh else (None, None)
+        return (
+            grad_means3D, grad_means2D, grad_sh, grad_sh2, grad_colors, grad_colors2,
+            grad_opacities, grad_weights, grad_lengths, grad_phases, None,
+            grad_scales, grad_rotations, grad_covariance, None,
+            grad_sh_rest, grad_sh2_rest, None, None,
         )
 
-        return grads
 
 class GaborRasterizationSettings(NamedTuple):
     image_height: int
-    image_width: int 
-    tanfovx : float
-    tanfovy : float
-    bg : torch.Tensor
-    scale_modifier : float
-    viewmatrix : torch.Tensor
-    projmatrix : torch.Tensor
-    sh_degree : int
-    campos : torch.Tensor
-    prefiltered : bool
-    debug : bool
+    image_width: int
+    tanfovx: float
+    tanfovy: float
+    bg: torch.Tensor
+    scale_modifier: float
+    viewmatrix: torch.Tensor
+    projmatrix: torch.Tensor
+    sh_degree: int
+    campos: torch.Tensor
+    prefiltered: bool
+    debug: bool
+
 
 class GaborRasterizer(nn.Module):
     def __init__(self, raster_settings):
@@ -322,62 +160,53 @@ class GaborRasterizer(nn.Module):
         self.raster_settings = raster_settings
 
     def markVisible(self, positions):
-        # Mark visible points (based on frustum culling for camera) with a boolean 
         with torch.no_grad():
-            raster_settings = self.raster_settings
-            visible = _C.mark_visible(
-                positions,
-                raster_settings.viewmatrix,
-                raster_settings.projmatrix)
-            
-        return visible
+            settings = self.raster_settings
+            return _C.mark_visible(positions, settings.viewmatrix, settings.projmatrix)
 
-    def forward(self, means3D, means2D, opacities, weights_for_frequency_angle, frequency_lengths, phases, F, shs = None, shs2 = None, colors_precomp = None, colors_precomp2 = None, scales = None, rotations = None, cov3D_precomp = None):
-        
-        raster_settings = self.raster_settings
+    def forward(
+        self, means3D, means2D, opacities, weights_for_frequency_angle,
+        frequency_lengths, phases, F, shs=None, shs2=None, colors_precomp=None,
+        colors_precomp2=None, scales=None, rotations=None, cov3D_precomp=None,
+        shs_rest=None, shs2_rest=None, raw_inputs=False,
+    ):
+        """Rasterize packed SH or separate DC/rest tensors.
 
-        if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
-            raise Exception('Please provide excatly one of either SHs or precomputed colors!')
-        
-        if (shs2 is None and colors_precomp2 is None) or (shs2 is not None and colors_precomp2 is not None):
-            raise Exception('Please provide excatly one of either SHs or precomputed colors!')
-        
-        if ((scales is None or rotations is None) and cov3D_precomp is None) or ((scales is not None or rotations is not None) and cov3D_precomp is not None):
-            raise Exception('Please provide exactly one of either scale/rotation pair or precomputed 3D covariance!')
-        
-        if shs is None:
-            shs = torch.Tensor([]).cuda()
-        if shs2 is None:
-            shs2 = torch.Tensor([]).cuda()
-        if colors_precomp is None:
-            colors_precomp = torch.Tensor([]).cuda()
-        if colors_precomp2 is None:
-            colors_precomp2 = torch.Tensor([]).cuda()
+        With ``shs_rest``/``shs2_rest``, each SH tensor is the DC coefficient
+        (P, 1, 3), and each rest tensor contains the remaining coefficients.
+        ``raw_inputs`` accepts log scales, unnormalized quaternions and opacity
+        logits; CUDA preprocessing performs the activations and their gradients.
+        """
+        if (shs is None) == (colors_precomp is None):
+            raise ValueError("Please provide exactly one of either SHs or precomputed colors!")
+        if (shs2 is None) == (colors_precomp2 is None):
+            raise ValueError("Please provide exactly one of either SHs2 or precomputed colors2!")
+        if ((scales is None or rotations is None) and cov3D_precomp is None) or (
+            (scales is not None or rotations is not None) and cov3D_precomp is not None
+        ):
+            raise ValueError("Please provide exactly one of scale/rotation or precomputed 3D covariance!")
+        if raw_inputs and cov3D_precomp is not None:
+            raise ValueError("raw_inputs requires scales and rotations, without precomputed covariance")
 
-        if scales is None:
-            scales = torch.Tensor([]).cuda()
-        if rotations is None:
-            rotations = torch.Tensor([]).cuda()
-        if cov3D_precomp is None:
-            cov3D_precomp = torch.Tensor([]).cuda()
-        
+        split_sh = shs_rest is not None or shs2_rest is not None
+        if split_sh:
+            if shs is not None and shs_rest is None:
+                raise ValueError("Split SH input requires shs_rest for the first SH set")
+            if shs2 is not None and shs2_rest is None:
+                raise ValueError("Split SH input requires shs2_rest for the second SH set")
+            if shs is None and shs_rest is not None:
+                raise ValueError("shs_rest requires shs DC coefficients")
+            if shs2 is None and shs2_rest is not None:
+                raise ValueError("shs2_rest requires shs2 DC coefficients")
 
-        # Invoke C++/CUDA rasterization routine
+        def or_empty(tensor):
+            return means3D.new_empty((0,)) if tensor is None else tensor
+
         return rasterize_gabors(
-            means3D,
-            means2D,
-            shs,
-            shs2,
-            colors_precomp,
-            colors_precomp2,
-            opacities,
-            weights_for_frequency_angle, 
-            frequency_lengths, 
-            phases, 
-            F, 
-            scales, 
-            rotations,
-            cov3D_precomp,
-            raster_settings, 
+            means3D, means2D, or_empty(shs), or_empty(shs2),
+            or_empty(colors_precomp), or_empty(colors_precomp2), opacities,
+            weights_for_frequency_angle, frequency_lengths, phases, F,
+            or_empty(scales), or_empty(rotations), or_empty(cov3D_precomp),
+            self.raster_settings, or_empty(shs_rest), or_empty(shs2_rest),
+            raw_inputs, split_sh,
         )
-

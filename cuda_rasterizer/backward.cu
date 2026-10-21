@@ -19,14 +19,14 @@ namespace cg = cooperative_groups;
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
-__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
+__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const float* shs_rest, bool split_sh, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs, glm::vec3* dL_dshs_rest)
 {
 	// Compute intermediate values, as it is done during forward
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	const auto sh = sh_coefficients((const glm::vec3*)shs, (const glm::vec3*)shs_rest, idx, max_coeffs, split_sh);
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
@@ -43,7 +43,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 	float z = dir.z;
 
 	// Target location for this Gaussian to write SH gradients to
-	glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
+	const auto dL_dsh = sh_coefficients(dL_dshs, dL_dshs_rest, idx, max_coeffs, split_sh);
 
 	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
@@ -543,6 +543,7 @@ __device__ void compute_transmat_aabb(
 	const float3* p_origs, 
 	const glm::vec2* scales, 
 	const glm::vec4* rots, 
+	const float scale_modifier,
 	const float* projmatrix, 
 	const float* viewmatrix, 
 	const int W, const int H, 
@@ -551,7 +552,8 @@ __device__ void compute_transmat_aabb(
 	float* dL_dTs, 
 	glm::vec3* dL_dmeans, 
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots,
+	bool raw_inputs)
 {
 	glm::mat3 T;
 	float3 normal;
@@ -572,10 +574,10 @@ __device__ void compute_transmat_aabb(
 		normal = {0.0, 0.0, 0.0};
 	} else {
 		p_orig = p_origs[idx];
-		rot = rots[idx];
-		scale = scales[idx];
+		rot = raw_inputs ? activate_rotation(rots[idx]) : rots[idx];
+		scale = raw_inputs ? activate_scale(scales[idx]) : scales[idx];
 		R = quat_to_rotmat(rot);
-		S = scale_to_mat(scale, 1.0f);
+		S = scale_to_mat(scale, scale_modifier);
 		
 		glm::mat3 L = R * S;
 		glm::mat3x4 M = glm::mat3x4(
@@ -657,15 +659,22 @@ __device__ void compute_transmat_aabb(
 	);
 
 	glm::mat3 dL_dR = glm::mat3(
-		dL_dRS[0] * glm::vec3(scale.x),
-		dL_dRS[1] * glm::vec3(scale.y),
+		dL_dRS[0] * glm::vec3(scale.x * scale_modifier),
+		dL_dRS[1] * glm::vec3(scale.y * scale_modifier),
 		dL_dRS[2]);
 	
 	dL_drots[idx] = quat_to_rotmat_vjp(rot, dL_dR);
-	dL_dscales[idx] = glm::vec2(
+	dL_dscales[idx] = scale_modifier * glm::vec2(
 		(float)glm::dot(dL_dRS[0], R[0]),
 		(float)glm::dot(dL_dRS[1], R[1])
 	);
+	if (raw_inputs)
+	{
+		// The matrix VJP above is with respect to the activated parameters.
+		// Fuse the two activation VJPs into this existing per-Gaussian pass.
+		dL_dscales[idx] *= scale;
+		dL_drots[idx] = activation_rotation_vjp(rots[idx], dL_drots[idx]);
+	}
 	dL_dmeans[idx] = glm::vec3(dL_dM[2]);
 }
 
@@ -678,6 +687,7 @@ __global__ void preprocessCUDA(
 	const float* shs,
 	const float* shs2,
 	const bool* clamped,
+	const bool* clamped2,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
@@ -698,7 +708,15 @@ __global__ void preprocessCUDA(
 	float3* dL_dmean2Ds,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots
+	glm::vec4* dL_drots,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs,
+	float* dL_dshs_rest,
+	float* dL_dshs2_rest,
+	const float4* normal_opacity,
+	float* dL_dopacities
 	)
 {
 	auto idx = cg::this_grid().thread_rank();
@@ -712,20 +730,27 @@ __global__ void preprocessCUDA(
 	compute_transmat_aabb(
 		idx, 
 		Ts_precomp,
-		means3D, scales, rotations, 
+		means3D, scales, rotations,
+		scale_modifier,
 		projmatrix, viewmatrix, W, H, 
 		(float3*)dL_dnormal3Ds, 
 		dL_dmean2Ds,
 		(dL_dtransMats), 
 		dL_dmean3Ds, 
 		dL_dscales, 
-		dL_drots
+		dL_drots,
+		raw_inputs
 	);
+	if (raw_inputs)
+	{
+		const float opacity = normal_opacity[idx].w;
+		dL_dopacities[idx] *= opacity * (1.0f - opacity);
+	}
 
 	if (shs)
-		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs);
+		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs, shs_rest, split_sh, clamped, (glm::vec3*)dL_dcolors, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs, (glm::vec3*)dL_dshs_rest);
 	if (shs2)
-		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs2, clamped, (glm::vec3*)dL_dcolors2, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs2);
+		computeColorFromSH(idx, D, M, (glm::vec3*)means3D, *campos, shs2, shs2_rest, split_sh, clamped2, (glm::vec3*)dL_dcolors2, (glm::vec3*)dL_dmean3Ds, (glm::vec3*)dL_dshs2, (glm::vec3*)dL_dshs2_rest);
 
 	// hack the gradient here for densitification
 	float depth = transMats[idx * 9 + 8];
@@ -741,6 +766,7 @@ void BACKWARD::preprocess(
 	const float* shs,
 	const float* shs2,
 	const bool* clamped,
+	const bool* clamped2,
 	const glm::vec2* scales,
 	const glm::vec4* rotations,
 	const float scale_modifier,
@@ -759,7 +785,15 @@ void BACKWARD::preprocess(
 	float* dL_dshs2,
 	glm::vec3* dL_dmean3Ds,
 	glm::vec2* dL_dscales,
-	glm::vec4* dL_drots)
+	glm::vec4* dL_drots,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs,
+	float* dL_dshs_rest,
+	float* dL_dshs2_rest,
+	const float4* normal_opacity,
+	float* dL_dopacities)
 {	
 	preprocessCUDA<NUM_CHANNELS><< <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -769,6 +803,7 @@ void BACKWARD::preprocess(
 		shs,
 		shs2,
 		clamped,
+		clamped2,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
@@ -788,7 +823,15 @@ void BACKWARD::preprocess(
 		dL_dmean2Ds,
 		dL_dmean3Ds,
 		dL_dscales,
-		dL_drots
+		dL_drots,
+		shs_rest,
+		shs2_rest,
+		split_sh,
+		raw_inputs,
+		dL_dshs_rest,
+		dL_dshs2_rest,
+		normal_opacity,
+		dL_dopacities
 	);
 }
 

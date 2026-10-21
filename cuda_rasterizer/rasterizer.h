@@ -28,6 +28,9 @@ namespace CudaRasterizer
 			float* projmatrix,
 			bool* present);
 
+		// split_sh keeps DC (P, 1, 3) and rest (P, M - 1, 3) separate.
+		// raw_inputs fuses exp(scale), sigmoid(opacity) and normalize(rotation)
+		// into preprocessing; backward returns gradients of those raw inputs.
 		static int forward(
 			std::function<char* (size_t)> geometryBuffer,
 			std::function<char* (size_t)> binningBuffer,
@@ -57,7 +60,11 @@ namespace CudaRasterizer
 			float* out_color,
 			float* out_others,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			const float* shs_rest = nullptr,
+			const float* shs2_rest = nullptr,
+			bool split_sh = false,
+			bool raw_inputs = false);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -101,7 +108,13 @@ namespace CudaRasterizer
 			float* dL_dscale,
 			float* dL_drot,
 			float* d_image, 
-			bool debug);
+			bool debug,
+			const float* shs_rest = nullptr,
+			const float* shs2_rest = nullptr,
+			bool split_sh = false,
+			bool raw_inputs = false,
+			float* dL_dsh_rest = nullptr,
+			float* dL_dsh2_rest = nullptr);
 	};
 };
 

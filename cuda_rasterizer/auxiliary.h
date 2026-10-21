@@ -59,6 +59,58 @@ __device__ const float SH_C3[] = {
 	-0.5900435899266435f
 };
 
+// A view of SH coefficients in either the legacy packed layout or separate
+// DC/rest parameter tensors. No concatenation or per-primitive scratch is needed.
+template <typename Vec3>
+struct SHCoefficients
+{
+	Vec3* dc;
+	Vec3* rest;
+
+	__forceinline__ __device__ Vec3& operator[](int coefficient) const
+	{
+		return coefficient == 0 ? *dc : rest[coefficient - 1];
+	}
+};
+
+template <typename Vec3>
+__forceinline__ __device__ SHCoefficients<Vec3> sh_coefficients(
+	Vec3* sh, Vec3* rest, int idx, int max_coeffs, bool split_sh)
+{
+	if (split_sh)
+		return {sh + idx, max_coeffs > 1 ? rest + idx * (max_coeffs - 1) : rest};
+	Vec3* packed = sh + idx * max_coeffs;
+	return {packed, packed + 1};
+}
+
+// Match torch.nn.functional.normalize(..., p=2, eps=1e-12), including its
+// constant-denominator branch for very small quaternions.
+__forceinline__ __device__ glm::vec4 activate_rotation(const glm::vec4 raw)
+{
+	const float norm = sqrtf(glm::dot(raw, raw));
+	return raw / fmaxf(norm, 1e-12f);
+}
+
+__forceinline__ __device__ glm::vec4 activation_rotation_vjp(
+	const glm::vec4 raw, const glm::vec4 gradient)
+{
+	const float norm = sqrtf(glm::dot(raw, raw));
+	if (norm < 1e-12f)
+		return gradient / 1e-12f;
+	const glm::vec4 normalized = raw / norm;
+	return (gradient - normalized * glm::dot(normalized, gradient)) / norm;
+}
+
+__forceinline__ __device__ glm::vec2 activate_scale(const glm::vec2 raw)
+{
+	return glm::vec2(expf(raw.x), expf(raw.y));
+}
+
+__forceinline__ __device__ float activate_opacity(const float raw)
+{
+	return 1.0f / (1.0f + expf(-raw));
+}
+
 __device__ const float PI = 3.14159265359;
 __device__ const float ANTI_ALIASE_MIN_THREASHOLD = 5.0;
 __device__ const float ANTI_ALIASE_MAX_THREASHOLD = 7.0;

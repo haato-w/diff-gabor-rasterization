@@ -158,6 +158,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	GeometryState geom;
 	obtain(chunk, geom.depths, P, 128);
 	obtain(chunk, geom.clamped, P * 3, 128);
+	obtain(chunk, geom.clamped2, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
 	obtain(chunk, geom.weights_for_frequency_angle, P * F, 128);
@@ -230,7 +231,11 @@ int CudaRasterizer::Rasterizer::forward(
 	float* out_color,
 	float* out_others,
 	int* radii,
-	bool debug)
+	bool debug,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -275,6 +280,7 @@ int CudaRasterizer::Rasterizer::forward(
 		shs,
 		shs2,
 		geomState.clamped,
+		geomState.clamped2,
 		transMat_precomp,
 		colors_precomp,
 		colors_precomp2,
@@ -295,7 +301,11 @@ int CudaRasterizer::Rasterizer::forward(
 		geomState.normal_opacity,
 		tile_grid,
 		geomState.tiles_touched,
-		prefiltered
+		prefiltered,
+		shs_rest,
+		shs2_rest,
+		split_sh,
+		raw_inputs
 	), debug)
 	preprocess_timing.stop();
 
@@ -431,7 +441,13 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dscale,
 	float* dL_drot,
 	float* d_image, 
-	bool debug)
+	bool debug,
+	const float* shs_rest,
+	const float* shs2_rest,
+	bool split_sh,
+	bool raw_inputs,
+	float* dL_dsh_rest,
+	float* dL_dsh2_rest)
 {
 	Profiling::Scope allocate_timing("backward.allocate");
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, F);
@@ -503,6 +519,7 @@ void CudaRasterizer::Rasterizer::backward(
 		shs,
 		shs2,
 		geomState.clamped,
+		geomState.clamped2,
 		(glm::vec2*)scales,
 		(glm::vec4*)rotations,
 		scale_modifier,
@@ -521,6 +538,14 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dsh2,
 		(glm::vec3*)dL_dmean3D,
 		(glm::vec2*)dL_dscale,
-		(glm::vec4*)dL_drot), debug)
+		(glm::vec4*)dL_drot,
+		shs_rest,
+		shs2_rest,
+		split_sh,
+		raw_inputs,
+		dL_dsh_rest,
+		dL_dsh2_rest,
+		geomState.normal_opacity,
+		dL_dopacity), debug)
 	preprocess_timing.stop();
 }

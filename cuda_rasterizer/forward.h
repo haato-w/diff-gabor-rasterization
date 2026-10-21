@@ -34,6 +34,7 @@ namespace FORWARD
 		const float* shs,
 		const float* shs2,
 		bool* clamped,
+		bool* clamped2,
 		const float* transMat_precomp,
 		const float* colors_precomp,
 		const float* colors_precomp2,
@@ -57,7 +58,11 @@ namespace FORWARD
 		float4* normal_opacity,
 		const dim3 grid,
 		uint32_t* tiles_touched,
-		bool prefiltered);
+		bool prefiltered,
+		const float* shs_rest,
+		const float* shs2_rest,
+		bool split_sh,
+		bool raw_inputs);
 
 	// Main rasterization method.
 	void render(

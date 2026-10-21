@@ -60,6 +60,7 @@ namespace BACKWARD
 		const float* shs,
 		const float* shs2,
 		const bool* clamped,
+		const bool* clamped2,
 		const glm::vec2* scales,
 		const glm::vec4* rotations,
 		const float scale_modifier,
@@ -78,7 +79,15 @@ namespace BACKWARD
 		float* dL_dsh2,
 		glm::vec3* dL_dmeans,
 		glm::vec2* dL_dscale,
-		glm::vec4* dL_drot
+		glm::vec4* dL_drot,
+		const float* shs_rest,
+		const float* shs2_rest,
+		bool split_sh,
+		bool raw_inputs,
+		float* dL_dsh_rest,
+		float* dL_dsh2_rest,
+		const float4* normal_opacity,
+		float* dL_dopacity
 		);
 }
 
