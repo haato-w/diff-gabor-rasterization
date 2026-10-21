@@ -68,9 +68,12 @@ class _RasterizeGabors(torch.autograd.Function):
         )
         fused = split_sh or raw_inputs
         native_forward = _C.rasterize_gabors
-        if fused:
+        if fused or raster_settings.tight_bbox:
             args += (sh_rest, sh2_rest, split_sh, raw_inputs)
             native_forward = _C.rasterize_gabors_fused
+        if raster_settings.tight_bbox:
+            args += (True,)
+            native_forward = _C.rasterize_gabors_bounded
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -152,6 +155,7 @@ class GaborRasterizationSettings(NamedTuple):
     campos: torch.Tensor
     prefiltered: bool
     debug: bool
+    tight_bbox: bool = False
 
 
 class GaborRasterizer(nn.Module):
@@ -176,6 +180,8 @@ class GaborRasterizer(nn.Module):
         (P, 1, 3), and each rest tensor contains the remaining coefficients.
         ``raw_inputs`` accepts log scales, unnormalized quaternions and opacity
         logits; CUDA preprocessing performs the activations and their gradients.
+        ``raster_settings.tight_bbox`` enables conservative opacity-dependent
+        tile bounds independently of either input-fusion option.
         """
         if (shs is None) == (colors_precomp is None):
             raise ValueError("Please provide exactly one of either SHs or precomputed colors!")

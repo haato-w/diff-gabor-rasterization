@@ -44,6 +44,8 @@ namespace CudaRasterizer
 		float* rgb2;
 		uint32_t* point_offsets;
 		uint32_t* tiles_touched;
+		// Tile rectangle, stored as (min_x, min_y, max_x, max_y), upper exclusive.
+		uint4* tile_bounds;
 
 		static GeometryState fromChunk(char*& chunk, size_t P, int F);
 	};

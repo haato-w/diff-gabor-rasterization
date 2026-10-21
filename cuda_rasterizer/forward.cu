@@ -144,6 +144,97 @@ __device__ bool compute_aabb(
 	return true;
 }
 
+// Bound one coordinate of the perspective projection of a local disk. Splitting
+// its numerator into components parallel/perpendicular to the denominator avoids
+// the cancellation in the usual extent^2 = center^2 - quadratic expression.
+__forceinline__ __device__ bool project_disk_axis(
+	const glm::vec3 a, const glm::vec3 w, const float r2,
+	const float denominator, const float w_length,
+	float& lower, float& upper)
+{
+	const float dot_aw = fmaf(a.x, w.x, a.y * w.y);
+	const float center = fmaf(-r2, dot_aw, a.z * w.z) / denominator;
+	float extent;
+	if (w_length > 0.0f)
+	{
+		const float parallel = dot_aw / w_length;
+		const float perpendicular = fmaf(a.x, w.y, -a.y * w.x) / w_length;
+		const float projected_parallel = fmaf(parallel, w.z, -a.z * w_length);
+		extent = sqrtf(r2) * hypotf(projected_parallel,
+			perpendicular * sqrtf(denominator)) / denominator;
+	}
+	else
+	{
+		extent = sqrtf(r2) * hypotf(a.x, a.y) / fabsf(w.z);
+	}
+	if (!isfinite(center) || !isfinite(extent)) return false;
+	// Cover rounding in the cutoff, perspective arithmetic and integer pixels.
+	const float guard = 1.0e-3f + 1.0e-4f * (fabsf(center) + extent + 1.0f);
+	lower = center - extent - guard;
+	upper = center + extent + guard;
+	return isfinite(lower) && isfinite(upper);
+}
+
+__forceinline__ __device__ uint32_t bound_tile(
+	const float coordinate, const int tile_size, const uint32_t tile_count,
+	const bool upper)
+{
+	// Our renderer samples integer pixels, unlike the half-pixel convention in
+	// Faster-GS. Include the tile containing the upper endpoint as well.
+	const float tile = floorf(coordinate / tile_size) + (upper ? 1.0f : 0.0f);
+	if (tile <= 0.0f) return 0;
+	if (tile >= static_cast<float>(tile_count)) return tile_count;
+	return static_cast<uint32_t>(tile);
+}
+
+__device__ void tighten_tile_rect(
+	const glm::mat3 T, const float opacity, const float2 legacy_center,
+	const dim3 grid, uint2& rect_min, uint2& rect_max)
+{
+	if (!isfinite(opacity) || !isfinite(legacy_center.x) || !isfinite(legacy_center.y)) return;
+	if (opacity < 1.0f / 255.0f)
+	{
+		// Preserve the legacy scalar radius/visibility even when no pixel can
+		// contribute. Only the duplication rectangle becomes empty.
+		rect_max = rect_min;
+		return;
+	}
+
+	float r2 = 2.0f * logf(opacity * 255.0f);
+	if (!isfinite(r2)) return;
+	r2 = fmaxf(r2, 0.0f);
+	r2 += 1.0e-4f + 1.0e-5f * r2;
+	const glm::vec3 w = T[2];
+	const float w_length2 = fmaf(w.x, w.x, w.y * w.y);
+	const float w_depth2 = w.z * w.z;
+	const float denominator = fmaf(-r2, w_length2, w_depth2);
+	// A disk crossing the projective horizon does not have a finite ellipse
+	// AABB. Ill-conditioned and nonfinite cases retain the legacy rectangle.
+	if (!isfinite(denominator) || !isfinite(w_depth2) ||
+		!(denominator > 1.0e-3f * w_depth2)) return;
+
+	float x_min, x_max, y_min, y_max;
+	const float w_length = sqrtf(w_length2);
+	if (!project_disk_axis(T[0], w, r2, denominator, w_length, x_min, x_max) ||
+		!project_disk_axis(T[1], w, r2, denominator, w_length, y_min, y_max)) return;
+
+	// rho = min(rho_surfel, rho_filter), hence support is the UNION of the
+	// projected disk and the low-pass disk at the unchanged legacy center.
+	const float filter_radius = sqrtf(r2 / FilterInvSquare) + 1.0e-3f;
+	x_min = fminf(x_min, legacy_center.x - filter_radius);
+	x_max = fmaxf(x_max, legacy_center.x + filter_radius);
+	y_min = fminf(y_min, legacy_center.y - filter_radius);
+	y_max = fmaxf(y_max, legacy_center.y + filter_radius);
+	if (!isfinite(x_min) || !isfinite(x_max) || !isfinite(y_min) || !isfinite(y_max)) return;
+
+	// Intersect with the baseline rectangle: high opacities can have a cutoff
+	// larger than 3 sigma, and must not introduce new baseline contributions.
+	rect_min.x = max(rect_min.x, bound_tile(x_min, BLOCK_X, grid.x, false));
+	rect_min.y = max(rect_min.y, bound_tile(y_min, BLOCK_Y, grid.y, false));
+	rect_max.x = max(rect_min.x, min(rect_max.x, bound_tile(x_max, BLOCK_X, grid.x, true)));
+	rect_max.y = max(rect_min.y, min(rect_max.y, bound_tile(y_max, BLOCK_Y, grid.y, true)));
+}
+
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
 __global__ void preprocessCUDA(int P, int D, int M,
@@ -185,7 +276,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float* shs_rest,
 	const float* shs2_rest,
 	bool split_sh,
-	bool raw_inputs)
+	bool raw_inputs,
+	uint4* tile_bounds,
+	bool tight_bbox)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= P)
@@ -195,6 +288,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	// this Gaussian will not be processed further.
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
+	tile_bounds[idx] = make_uint4(0, 0, 0, 0);
 
 	// Perform near culling, quit if outside.
 	float3 p_view;
@@ -235,12 +329,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 
 	const float opacity = raw_inputs ? activate_opacity(opacities[idx]) : opacities[idx];
 
-#if TIGHTBBOX // no use in the paper, but it indeed help speeds.
-	// the effective extent is now depended on the opacity of gaussian.
-	float cutoff = sqrtf(max(9.f + 2.f * logf(opacity), 0.000001));
-#else
-	float cutoff = 3.0f;
-#endif
+	// Keep this center and radius unchanged: the pixel filter and its backward
+	// derivative use the 3-sigma center, and densification consumes the radius.
+	const float cutoff = 3.0f;
 
 	// Compute center and radius
 	float2 point_image;
@@ -256,6 +347,9 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	getRect(point_image, radius, rect_min, rect_max, grid);
 	if ((rect_max.x - rect_min.x) * (rect_max.y - rect_min.y) == 0)
 		return;
+	if (tight_bbox)
+		tighten_tile_rect(T, opacity, point_image, grid, rect_min, rect_max);
+	tile_bounds[idx] = make_uint4(rect_min.x, rect_min.y, rect_max.x, rect_max.y);
 
 	// Compute colors 
 	if (colors_precomp == nullptr) {
@@ -591,7 +685,9 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float* shs_rest,
 	const float* shs2_rest,
 	bool split_sh,
-	bool raw_inputs)
+	bool raw_inputs,
+	uint4* tile_bounds,
+	bool tight_bbox)
 {
 	preprocessCUDA<NUM_CHANNELS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
@@ -633,6 +729,8 @@ void FORWARD::preprocess(int P, int D, int M,
 		shs_rest,
 		shs2_rest,
 		split_sh,
-		raw_inputs
+		raw_inputs,
+		tile_bounds,
+		tight_bbox
 		);
 }

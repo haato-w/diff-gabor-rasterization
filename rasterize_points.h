@@ -77,6 +77,39 @@ RasterizeResult RasterizeGaborsFusedCUDA(
 	const bool split_sh,
 	const bool raw_inputs);
 
+// Keep the existing forward exports unchanged; bounds are an independent option.
+RasterizeResult RasterizeGaborsBoundedCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs,
+	const bool tight_bbox);
+
 RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,

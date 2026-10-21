@@ -18,7 +18,6 @@
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
 
-#define TIGHTBBOX 0
 #define RENDER_AXUTILITY 1
 #define DEPTH_OFFSET 0
 #define ALPHA_OFFSET 1

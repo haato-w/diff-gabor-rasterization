@@ -64,7 +64,8 @@ namespace CudaRasterizer
 			const float* shs_rest = nullptr,
 			const float* shs2_rest = nullptr,
 			bool split_sh = false,
-			bool raw_inputs = false);
+			bool raw_inputs = false,
+			bool tight_bbox = false);
 
 		static void backward(
 			const int P, int D, int M, int R,

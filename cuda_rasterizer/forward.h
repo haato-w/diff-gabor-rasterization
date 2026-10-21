@@ -62,7 +62,9 @@ namespace FORWARD
 		const float* shs_rest,
 		const float* shs2_rest,
 		bool split_sh,
-		bool raw_inputs);
+		bool raw_inputs,
+		uint4* tile_bounds,
+		bool tight_bbox);
 
 	// Main rasterization method.
 	void render(

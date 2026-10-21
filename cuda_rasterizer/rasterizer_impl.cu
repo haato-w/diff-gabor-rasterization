@@ -70,7 +70,7 @@ __global__ void checkFrustum(int P,
 // Run once per Gaussian (1:N mapping).
 __global__ void duplicateWithKeys(
 	int P,
-	const float2* points_xy,
+	const uint4* tile_bounds,
 	const float* depths,
 	const uint32_t* offsets,
 	uint64_t* gaussian_keys_unsorted,
@@ -87,18 +87,18 @@ __global__ void duplicateWithKeys(
 	{
 		// Find this Gaussian's offset in buffer for writing keys/values.
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
-		uint2 rect_min, rect_max;
-
-		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
+		// Use exactly the rectangle counted in preprocessing. The scalar radius
+		// remains the legacy value used by visibility and densification.
+		const uint4 bounds = tile_bounds[idx];
 
 		// For each tile that the bounding rect overlaps, emit a 
 		// key/value pair. The key is |  tile ID  |      depth      |,
 		// and the value is the ID of the Gaussian. Sorting the values 
 		// with this key yields Gaussian IDs in a list, such that they
 		// are first sorted by tile and then by depth. 
-		for (int y = rect_min.y; y < rect_max.y; y++)
+		for (int y = bounds.y; y < bounds.w; y++)
 		{
-			for (int x = rect_min.x; x < rect_max.x; x++)
+			for (int x = bounds.x; x < bounds.z; x++)
 			{
 				uint64_t key = y * grid.x + x;
 				key <<= 32;
@@ -169,6 +169,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.rgb, P * 3, 128);
 	obtain(chunk, geom.rgb2, P * 3, 128);
 	obtain(chunk, geom.tiles_touched, P, 128);
+	obtain(chunk, geom.tile_bounds, P, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, geom.scan_size, geom.tiles_touched, geom.tiles_touched, P);
 	obtain(chunk, geom.scanning_space, geom.scan_size, 128);
 	obtain(chunk, geom.point_offsets, P, 128);
@@ -235,7 +236,8 @@ int CudaRasterizer::Rasterizer::forward(
 	const float* shs_rest,
 	const float* shs2_rest,
 	bool split_sh,
-	bool raw_inputs)
+	bool raw_inputs,
+	bool tight_bbox)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -305,7 +307,9 @@ int CudaRasterizer::Rasterizer::forward(
 		shs_rest,
 		shs2_rest,
 		split_sh,
-		raw_inputs
+		raw_inputs,
+		geomState.tile_bounds,
+		tight_bbox
 	), debug)
 	preprocess_timing.stop();
 
@@ -332,7 +336,7 @@ int CudaRasterizer::Rasterizer::forward(
 	Profiling::Scope duplicate_timing("forward.duplicate");
 	duplicateWithKeys << <(P + 255) / 256, 256 >> > (
 		P,
-		geomState.means2D,
+		geomState.tile_bounds,
 		geomState.depths,
 		geomState.point_offsets,
 		binningState.point_list_keys_unsorted,
