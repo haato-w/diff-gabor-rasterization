@@ -11,6 +11,7 @@
 
 #include "backward.h"
 #include "auxiliary.h"
+#include "per_gaussian_backward.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
@@ -898,4 +899,63 @@ void BACKWARD::render(
 		dL_dcolors2, 
 		d_image
 		);
+}
+
+void BACKWARD::render_gaussian(
+	const dim3 grid, const dim3 block,
+	const uint2* ranges,
+	const uint32_t* point_list,
+	int W, int H,
+	float focal_x, float focal_y,
+	const float* bg_color,
+	const float2* means2D,
+	const float* weights_for_frequency_angle,
+	const float* frequency_lengths,
+	const float* phases,
+	const int F,
+	const float4* normal_opacity,
+	const float* colors,
+	const float* colors2,
+	const float* transMats,
+	const float* depths,
+	const float* final_Ts,
+	const uint32_t* n_contrib,
+	const float* dL_dpixels,
+	const float* dL_depths,
+	float* dL_dtransMat,
+	float3* dL_dmean2D,
+	float* dL_dnormal3D,
+	float* dL_dopacity,
+	float* dL_dweights_for_frequency_angle,
+	float* dL_dfrequency_lengths,
+	float* dL_dphases,
+	float* dL_dcolors,
+	float* dL_dcolors2,
+	float* d_image,
+	int bucket_capacity, int num_tiles,
+	const uint32_t* bucket_offsets,
+	const uint32_t* bucket_to_tile,
+	const uint32_t* tile_max_contrib,
+	const float4* bucket_color_T,
+	const float4* bucket_depth_normal,
+	const float2* bucket_moments,
+	const float* final_image,
+	const float* final_aux)
+{
+	if (bucket_capacity == 0 || num_tiles == 0)
+		return;
+	const dim3 gaussian_grid((bucket_capacity + GAUSSIAN_BACKWARD_WARPS - 1) / GAUSSIAN_BACKWARD_WARPS);
+	const dim3 gaussian_block(32 * GAUSSIAN_BACKWARD_WARPS);
+	const auto kernel = F == 4 ? renderGaussianCUDA<4> : renderGaussianCUDA<0>;
+	kernel<<<gaussian_grid, gaussian_block>>>(
+		ranges, point_list, W, H, bg_color, means2D,
+		weights_for_frequency_angle, frequency_lengths, phases, F,
+		normal_opacity, colors, colors2, transMats, final_Ts, n_contrib,
+		dL_dpixels, dL_depths,
+		dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity,
+		dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases,
+		dL_dcolors, dL_dcolors2,
+		bucket_capacity, num_tiles, bucket_offsets, bucket_to_tile,
+		tile_max_contrib, bucket_color_T, bucket_depth_normal, bucket_moments,
+		final_image, final_aux);
 }

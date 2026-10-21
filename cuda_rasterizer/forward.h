@@ -93,7 +93,14 @@ namespace FORWARD
 		uint32_t* n_contrib,
 		const float* bg_color,
 		float* out_color,
-		float* out_others);
+		float* out_others,
+		bool gaussian_backward,
+		const uint32_t* bucket_offsets,
+		uint32_t* bucket_to_tile,
+		uint32_t* tile_max_contrib,
+		float4* bucket_color_T,
+		float4* bucket_depth_normal,
+		float2* bucket_moments);
 }
 
 

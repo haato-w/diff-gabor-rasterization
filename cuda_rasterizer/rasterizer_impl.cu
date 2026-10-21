@@ -124,6 +124,24 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		ranges[currtile].y = L;
 }
 
+__global__ void countTileBuckets(int tiles, const uint2* ranges, uint32_t* counts)
+{
+	const unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx < tiles)
+	{
+		const uint2 range = ranges[idx];
+		counts[idx] = (range.y - range.x + 31) / 32;
+	}
+}
+
+// Sum ceil(tile_instances/32) <= ceil(R/32) + nonempty_tiles - 1.
+// Reserve this bound instead of downloading another GPU count to the CPU.
+static int bucketCapacity(int instances, int tiles)
+{
+	return instances == 0 ? 0 : static_cast<int>(std::min<size_t>(
+		instances, (static_cast<size_t>(instances) + 31) / 32 + tiles - 1));
+}
+
 // Mark Gaussians as visible/invisible, based on view frustum testing
 void CudaRasterizer::Rasterizer::markVisible(
 	int P,
@@ -187,6 +205,22 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chun
 	return binning;
 }
 
+CudaRasterizer::BucketState CudaRasterizer::BucketState::fromChunk(char*& chunk, size_t tiles, size_t capacity)
+{
+	BucketState state;
+	obtain(chunk, state.counts, tiles, 128);
+	obtain(chunk, state.offsets, tiles, 128);
+	obtain(chunk, state.to_tile, capacity, 128);
+	obtain(chunk, state.tile_max_contrib, tiles, 128);
+	cub::DeviceScan::InclusiveSum(nullptr, state.scan_size, state.counts, state.offsets, tiles);
+	obtain(chunk, state.scanning_space, state.scan_size, 128);
+	const size_t samples = capacity * static_cast<size_t>(BLOCK_SIZE);
+	obtain(chunk, state.color_T, samples, 128);
+	obtain(chunk, state.depth_normal, samples, 128);
+	obtain(chunk, state.moments, samples, 128);
+	return state;
+}
+
 // Forward rendering procedure for differentiable rasterization
 // of Gaussians.
 int CudaRasterizer::Rasterizer::forward(
@@ -227,7 +261,8 @@ int CudaRasterizer::Rasterizer::forward(
 	bool tight_bbox,
 	bool tile_culling,
 	bool load_balance,
-	int tile_culling_threshold)
+	int tile_culling_threshold,
+	bool gaussian_backward)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -321,8 +356,15 @@ int CudaRasterizer::Rasterizer::forward(
 
 	Profiling::Scope binning_timing("forward.allocate_binning");
 	size_t binning_chunk_size = required<BinningState>(num_rendered, F);
+	const int num_tiles = tile_grid.x * tile_grid.y;
+	const int bucket_capacity = gaussian_backward ? bucketCapacity(num_rendered, num_tiles) : 0;
+	if (gaussian_backward)
+		binning_chunk_size += required<BucketState>(num_tiles, bucket_capacity);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, F);
+	BucketState bucketState{};
+	if (gaussian_backward)
+		bucketState = BucketState::fromChunk(binning_chunkptr, num_tiles, bucket_capacity);
 	binning_timing.stop();
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
@@ -381,6 +423,14 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(, debug)
 	tile_ranges_timing.stop();
 
+	if (gaussian_backward)
+	{
+		Profiling::Scope bucket_timing("forward.backward_buckets");
+		countTileBuckets<<<(num_tiles + 255) / 256, 256>>>(num_tiles, imgState.ranges, bucketState.counts);
+		CHECK_CUDA(cub::DeviceScan::InclusiveSum(bucketState.scanning_space,
+			bucketState.scan_size, bucketState.counts, bucketState.offsets, num_tiles), debug)
+	}
+
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
 	const float* feature_ptr2 = colors_precomp2 != nullptr ? colors_precomp2 : geomState.rgb2;
@@ -406,7 +456,14 @@ int CudaRasterizer::Rasterizer::forward(
 		imgState.n_contrib,
 		background,
 		out_color,
-		out_others), debug)
+		out_others,
+		gaussian_backward,
+		bucketState.offsets,
+		bucketState.to_tile,
+		bucketState.tile_max_contrib,
+		bucketState.color_T,
+		bucketState.depth_normal,
+		bucketState.moments), debug)
 	render_timing.stop();
 
 	return num_rendered;
@@ -462,7 +519,10 @@ void CudaRasterizer::Rasterizer::backward(
 	bool split_sh,
 	bool raw_inputs,
 	float* dL_dsh_rest,
-	float* dL_dsh2_rest)
+	float* dL_dsh2_rest,
+	bool gaussian_backward,
+	const float* final_image,
+	const float* final_aux)
 {
 	Profiling::Scope allocate_timing("backward.allocate");
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, F);
@@ -480,6 +540,11 @@ void CudaRasterizer::Rasterizer::backward(
 
 	const dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
 	const dim3 block(BLOCK_X, BLOCK_Y, 1);
+	const int num_tiles = tile_grid.x * tile_grid.y;
+	const int bucket_capacity = gaussian_backward ? bucketCapacity(R, num_tiles) : 0;
+	BucketState bucketState{};
+	if (gaussian_backward)
+		bucketState = BucketState::fromChunk(binning_buffer, num_tiles, bucket_capacity);
 
 	// Compute loss gradients w.r.t. 2D mean position, conic matrix,
 	// opacity and RGB of Gaussians from per-pixel loss gradients.
@@ -489,38 +554,38 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* depth_ptr = geomState.depths;
 	const float* transMat_ptr = (transMat_precomp != nullptr) ? transMat_precomp : geomState.transMat;
 	Profiling::Scope render_timing("backward.render");
-	CHECK_CUDA(BACKWARD::render(
-		tile_grid,
-		block,
-		imgState.ranges,
-		binningState.point_list,
-		width, height,
-		focal_x, focal_y,
-		background,
-		geomState.means2D,
-		geomState.weights_for_frequency_angle, 
-		geomState.frequency_lengths, 
-		geomState.phases, 
-		F, 
-		geomState.normal_opacity,
-		color_ptr,
-		color_ptr2,
-		transMat_ptr,
-		depth_ptr,
-		imgState.accum_alpha,
-		imgState.n_contrib,
-		dL_dpix,
-		dL_depths,
-		dL_dtransMat,
-		(float3*)dL_dmean2D,
-		dL_dnormal,
-		dL_dopacity,
-		dL_dweights_for_frequency_angle, 
-		dL_dfrequency_lengths, 
-		dL_dphases, 
-		dL_dcolor,
-		dL_dcolor2, 
-		d_image), debug)
+	if (gaussian_backward)
+	{
+		BACKWARD::render_gaussian(
+			tile_grid, block, imgState.ranges, binningState.point_list,
+			width, height, focal_x, focal_y, background,
+			geomState.means2D, geomState.weights_for_frequency_angle,
+			geomState.frequency_lengths, geomState.phases, F,
+			geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
+			depth_ptr, imgState.accum_alpha, imgState.n_contrib,
+			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
+			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
+			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
+			d_image, bucket_capacity, num_tiles, bucketState.offsets,
+			bucketState.to_tile, bucketState.tile_max_contrib,
+			bucketState.color_T, bucketState.depth_normal,
+			bucketState.moments, final_image, final_aux);
+	}
+	else
+	{
+		BACKWARD::render(
+			tile_grid, block, imgState.ranges, binningState.point_list,
+			width, height, focal_x, focal_y, background,
+			geomState.means2D, geomState.weights_for_frequency_angle,
+			geomState.frequency_lengths, geomState.phases, F,
+			geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
+			depth_ptr, imgState.accum_alpha, imgState.n_contrib,
+			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
+			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
+			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
+			d_image);
+	}
+	CHECK_CUDA(, debug)
 	render_timing.stop();
 
 	// Take care of the rest of preprocessing. Was the precomputed covariance

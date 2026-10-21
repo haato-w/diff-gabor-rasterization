@@ -53,6 +53,50 @@ namespace BACKWARD
 		float* dL_dcolors2, 
 		float* d_image);
 
+	// Ordinary arguments follow render's implementation order: color endpoints
+	// precede the projective transforms. The additional buffers are saved by
+	// the forward pass only when Gaussian-owned backward rendering is enabled.
+	void render_gaussian(
+		const dim3 grid, dim3 block,
+		const uint2* ranges,
+		const uint32_t* point_list,
+		int W, int H,
+		float focal_x, float focal_y,
+		const float* bg_color,
+		const float2* means2D,
+		const float* weights_for_frequency_angle,
+		const float* frequency_lengths,
+		const float* phases,
+		const int F,
+		const float4* normal_opacity,
+		const float* colors,
+		const float* colors2,
+		const float* transMats,
+		const float* depths,
+		const float* final_Ts,
+		const uint32_t* n_contrib,
+		const float* dL_dpixels,
+		const float* dL_depths,
+		float* dL_dtransMat,
+		float3* dL_dmean2D,
+		float* dL_dnormal3D,
+		float* dL_dopacity,
+		float* dL_dweights_for_frequency_angle,
+		float* dL_dfrequency_lengths,
+		float* dL_dphases,
+		float* dL_dcolors,
+		float* dL_dcolors2,
+		float* d_image,
+		int bucket_capacity, int num_tiles,
+		const uint32_t* bucket_offsets,
+		const uint32_t* bucket_to_tile,
+		const uint32_t* tile_max_contrib,
+		const float4* bucket_color_T,
+		const float4* bucket_depth_normal,
+		const float2* bucket_moments,
+		const float* final_image,
+		const float* final_aux);
+
 	void preprocess(
 		int P, int D, int M,
 		const float3* means,

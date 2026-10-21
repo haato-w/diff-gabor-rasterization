@@ -464,7 +464,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS>
+template <uint32_t CHANNELS, bool GaussianBackward>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -485,7 +485,13 @@ renderCUDA(
 	uint32_t* __restrict__ n_contrib,
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
-	float* __restrict__ out_others)
+	float* __restrict__ out_others,
+	const uint32_t* __restrict__ bucket_offsets,
+	uint32_t* __restrict__ bucket_to_tile,
+	uint32_t* __restrict__ tile_max_contrib,
+	float4* __restrict__ bucket_color_T,
+	float4* __restrict__ bucket_depth_normal,
+	float2* __restrict__ bucket_moments)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -503,6 +509,16 @@ renderCUDA(
 
 	// Load start/end range of IDs to process in bit sorted list.
 	uint2 range = ranges[block.group_index().y * horizontal_blocks + block.group_index().x];
+	const uint32_t tile = block.group_index().y * horizontal_blocks + block.group_index().x;
+	uint32_t first_bucket = 0;
+	if (GaussianBackward)
+	{
+		first_bucket = tile ? bucket_offsets[tile - 1] : 0;
+		const uint32_t buckets = (range.y - range.x + 31) / 32;
+		// Initialize even buckets that no pixel reaches due to early termination.
+		for (uint32_t b = block.thread_rank(); b < buckets; b += BLOCK_SIZE)
+			bucket_to_tile[first_bucket + b] = tile;
+	}
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
 
@@ -563,6 +579,16 @@ renderCUDA(
 		// Iterate over current batch
 		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
 		{
+			if (GaussianBackward && (j & 31) == 0)
+			{
+				const size_t b = first_bucket + (i * BLOCK_SIZE + j) / 32;
+				const size_t snapshot = b * BLOCK_SIZE + block.thread_rank();
+				bucket_color_T[snapshot] = make_float4(C[0], C[1], C[2], T);
+#if RENDER_AXUTILITY
+				bucket_depth_normal[snapshot] = make_float4(D, N[0], N[1], N[2]);
+				bucket_moments[snapshot] = make_float2(M1, M2);
+#endif
+			}
 			// Keep track of current position in range
 			contributor++;
 
@@ -660,6 +686,23 @@ renderCUDA(
 			last_contributor = contributor;
 		}
 	}
+	if (GaussianBackward)
+	{
+		__shared__ uint32_t warp_max[BLOCK_SIZE / 32];
+		uint32_t value = inside ? last_contributor : 0;
+		for (int offset = 16; offset > 0; offset /= 2)
+			value = max(value, __shfl_down_sync(0xffffffffu, value, offset));
+		if ((block.thread_rank() & 31) == 0)
+			warp_max[block.thread_rank() / 32] = value;
+		block.sync();
+		if (block.thread_rank() == 0)
+		{
+			value = 0;
+			for (int warp = 0; warp < BLOCK_SIZE / 32; ++warp)
+				value = max(value, warp_max[warp]);
+			tile_max_contrib[tile] = value;
+		}
+	}
 
 	// All threads that treat valid pixel write out their final
 	// rendering data to the frame and auxiliary buffers.
@@ -704,9 +747,18 @@ void FORWARD::render(
 	uint32_t* n_contrib,
 	const float* bg_color,
 	float* out_color,
-	float* out_others)
+	float* out_others,
+	bool gaussian_backward,
+	const uint32_t* bucket_offsets,
+	uint32_t* bucket_to_tile,
+	uint32_t* tile_max_contrib,
+	float4* bucket_color_T,
+	float4* bucket_depth_normal,
+	float2* bucket_moments)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
+	auto launch = [&](auto gaussian_mode)
+	{
+	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
@@ -725,7 +777,16 @@ void FORWARD::render(
 		n_contrib,
 		bg_color,
 		out_color,
-		out_others);
+		out_others,
+		bucket_offsets,
+		bucket_to_tile,
+		tile_max_contrib,
+		bucket_color_T,
+		bucket_depth_normal,
+		bucket_moments);
+	};
+	if (gaussian_backward) launch(std::true_type{});
+	else launch(std::false_type{});
 }
 
 void FORWARD::preprocess(int P, int D, int M,

@@ -69,16 +69,20 @@ class _RasterizeGabors(torch.autograd.Function):
         fused = split_sh or raw_inputs
         native_forward = _C.rasterize_gabors
         culled = raster_settings.tile_culling or raster_settings.load_balance
-        if fused or raster_settings.tight_bbox or culled:
+        gaussian_backward = raster_settings.gaussian_backward
+        if fused or raster_settings.tight_bbox or culled or gaussian_backward:
             args += (sh_rest, sh2_rest, split_sh, raw_inputs)
             native_forward = _C.rasterize_gabors_fused
-        if raster_settings.tight_bbox or culled:
+        if raster_settings.tight_bbox or culled or gaussian_backward:
             args += (raster_settings.tight_bbox,)
             native_forward = _C.rasterize_gabors_bounded
-        if culled:
+        if culled or gaussian_backward:
             args += (raster_settings.tile_culling, raster_settings.load_balance,
                      raster_settings.tile_culling_threshold)
             native_forward = _C.rasterize_gabors_culled
+        if gaussian_backward:
+            args += (gaussian_backward,)
+            native_forward = _C.rasterize_gabors_gaussian_backward
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -102,6 +106,7 @@ class _RasterizeGabors(torch.autograd.Function):
             colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle,
             frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii,
             sh, sh2, geomBuffer, binningBuffer, imgBuffer, sh_rest, sh2_rest,
+            *((color, depth) if gaussian_backward else ()),
         )
         return color, radii, depth
 
@@ -110,7 +115,7 @@ class _RasterizeGabors(torch.autograd.Function):
         settings = ctx.raster_settings
         (colors, colors2, means3D, weights, lengths, phases, scales, rotations,
          covariance, radii, sh, sh2, geometry, binning, image,
-         sh_rest, sh2_rest) = ctx.saved_tensors
+         sh_rest, sh2_rest) = ctx.saved_tensors[:17]
         # Autograd may provide expanded or strided image gradients.
         args = (
             settings.bg, means3D, weights, lengths, phases, ctx.F, radii,
@@ -121,9 +126,12 @@ class _RasterizeGabors(torch.autograd.Function):
             geometry, ctx.num_rendered, binning, image, settings.debug,
         )
         native_backward = _C.rasterize_gabors_backward
-        if ctx.fused:
+        if ctx.fused or settings.gaussian_backward:
             args += (sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs)
             native_backward = _C.rasterize_gabors_backward_fused
+        if settings.gaussian_backward:
+            args += (settings.gaussian_backward, *ctx.saved_tensors[17:])
+            native_backward = _C.rasterize_gabors_backward_gaussian
         if settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
@@ -164,6 +172,7 @@ class GaborRasterizationSettings(NamedTuple):
     tile_culling: bool = False
     load_balance: bool = False
     tile_culling_threshold: int = 4
+    gaussian_backward: bool = False
 
 
 class GaborRasterizer(nn.Module):
@@ -193,6 +202,8 @@ class GaborRasterizer(nn.Module):
         ``tile_culling`` rejects tiles outside the projected surfel and filter
         support. ``load_balance`` cooperatively processes large tile rectangles;
         ``tile_culling_threshold`` controls the first 0 to 32 tiles per thread.
+        ``gaussian_backward`` records compositing checkpoints in forward for
+        primitive-owned backward accumulation; False retains per-pixel backward.
         """
         threshold = self.raster_settings.tile_culling_threshold
         if type(threshold) is not int or not 0 <= threshold <= 32:

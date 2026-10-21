@@ -75,6 +75,23 @@ namespace CudaRasterizer
 		static BinningState fromChunk(char*& chunk, size_t P, int F);
 	};
 
+	// Optional training checkpoints, appended after BinningState. A bucket is
+	// 32 consecutive entries of one tile's sorted primitive list.
+	struct BucketState
+	{
+		size_t scan_size;
+		uint32_t* counts;
+		uint32_t* offsets;
+		uint32_t* to_tile;
+		uint32_t* tile_max_contrib;
+		char* scanning_space;
+		float4* color_T;
+		float4* depth_normal;
+		float2* moments;
+
+		static BucketState fromChunk(char*& chunk, size_t tiles, size_t capacity);
+	};
+
 	template<typename T> 
 	size_t required(size_t P, int F)
 	{
