@@ -70,7 +70,8 @@ namespace CudaRasterizer
 			bool load_balance = false,
 			int tile_culling_threshold = 4,
 			bool gaussian_backward = false,
-			bool warp_culling = false);
+			bool warp_culling = false,
+			bool separate_sort = false);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -123,7 +124,8 @@ namespace CudaRasterizer
 			float* dL_dsh2_rest = nullptr,
 			bool gaussian_backward = false,
 			const float* final_image = nullptr,
-			const float* final_aux = nullptr);
+			const float* final_aux = nullptr,
+			bool separate_sort = false);
 	};
 };
 

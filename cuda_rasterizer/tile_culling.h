@@ -139,24 +139,26 @@ __forceinline__ __device__ TileSupport shuffle_tile_support(const TileSupport& s
     return r;
 }
 
+template<typename KeyT>
 __forceinline__ __device__ void emit_tile_instance(
     const uint32_t primitive, const float depth, const uint32_t tile_x,
     const uint32_t tile_y, const uint32_t grid_width, const uint32_t offset,
-    uint64_t* keys, uint32_t* values)
+	KeyT* keys, uint32_t* values)
 {
-    const uint64_t key = (static_cast<uint64_t>(tile_y * grid_width + tile_x) << 32) | __float_as_uint(depth);
-    keys[offset] = key;
+    const uint32_t tile = tile_y * grid_width + tile_x;
+    const uint64_t key = (static_cast<uint64_t>(tile) << 32) | __float_as_uint(depth);
+    keys[offset] = sizeof(KeyT) == sizeof(uint64_t) ? static_cast<KeyT>(key) : static_cast<KeyT>(tile);
     values[offset] = primitive;
 }
 
 // The SAME predicate and row-major traversal serve count and emission. Full
 // warps enter this function, including out-of-range or invisible lanes.
-template<bool Emit>
+template<bool Emit, typename KeyT = uint64_t>
 __forceinline__ __device__ uint32_t enumerate_tiles(
     const uint32_t primitive, const uint4 bounds, const TileSupport support,
     const float depth, const uint32_t offset, const uint32_t grid_width,
     const bool active, const bool tile_culling, const bool load_balance,
-    const int sequential_threshold, uint64_t* keys = nullptr, uint32_t* values = nullptr)
+    const int sequential_threshold, KeyT* keys = nullptr, uint32_t* values = nullptr)
 {
     const uint32_t width = bounds.z - bounds.x;
     const uint32_t total = active ? width * (bounds.w - bounds.y) : 0;

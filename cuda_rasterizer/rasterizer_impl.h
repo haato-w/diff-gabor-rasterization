@@ -68,11 +68,34 @@ namespace CudaRasterizer
 		size_t sorting_size;
 		uint64_t* point_list_keys_unsorted;
 		uint64_t* point_list_keys;
+		uint16_t* tile_keys16_unsorted;
+		uint16_t* tile_keys16;
+		uint32_t* tile_keys32_unsorted;
+		uint32_t* tile_keys32;
 		uint32_t* point_list_unsorted;
 		uint32_t* point_list;
 		char* list_sorting_space;
 
-		static BinningState fromChunk(char*& chunk, size_t P, int F);
+		static BinningState fromChunk(char*& chunk, size_t P, int F,
+			bool separate_sort = false, int tiles = 0);
+	};
+
+	// Optional forward scratch. Render intermediates retain original primitive
+	// indices so no extra parameter/gradient indirection is needed in backward.
+	struct DepthSortState
+	{
+		size_t selection_size;
+		size_t reduction_size;
+		size_t sorting_size;
+		uint32_t* visible_ids;
+		uint32_t* sorted_ids;
+		uint32_t* depth_keys;
+		uint32_t* depth_keys_unsorted;
+		uint32_t* ordered_tiles;
+		uint32_t* counts; // [primitive/tile instance count, visible primitive count]
+		char* workspace;
+
+		static DepthSortState fromChunk(char*& chunk, size_t P, int F);
 	};
 
 	// Optional training checkpoints, appended after BinningState. A bucket is
@@ -92,11 +115,11 @@ namespace CudaRasterizer
 		static BucketState fromChunk(char*& chunk, size_t tiles, size_t capacity);
 	};
 
-	template<typename T> 
-	size_t required(size_t P, int F)
+	template<typename T, typename... Args>
+	size_t required(size_t P, int F, Args... args)
 	{
 		char* size = nullptr;
-		T::fromChunk(size, P, F);
+		T::fromChunk(size, P, F, args...);
 		return ((size_t)size) + 128;
 	}
 };

@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <numeric>
 #include <type_traits>
+#include <limits>
 #include <cuda.h>
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
@@ -32,6 +33,12 @@ namespace cg = cooperative_groups;
 #include "forward.h"
 #include "backward.h"
 #include "profiling.h"
+
+struct HasTouchedTile
+{
+	__host__ __device__ bool operator()(uint32_t count) const { return count != 0; }
+};
+using VisibleFlags = cub::TransformInputIterator<bool, HasTouchedTile, const uint32_t*>;
 
 // Helper function to find the next-highest bit of the MSB
 // on the CPU.
@@ -100,20 +107,22 @@ __global__ void duplicateWithKeys(
 // Check keys to see if it is at the start/end of one tile's range in 
 // the full sorted list. If yes, write start/end of this tile. 
 // Run once per instanced (duplicated) Gaussian ID.
-__global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
+template<typename KeyT>
+__global__ void identifyTileRanges(int L, const KeyT* point_list_keys, uint2* ranges)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= L)
 		return;
 
 	// Read tile ID from key. Update start/end of tile range if at limit.
-	uint64_t key = point_list_keys[idx];
-	uint32_t currtile = key >> 32;
+	const KeyT key = point_list_keys[idx];
+	const uint32_t currtile = sizeof(KeyT) == 8 ? static_cast<uint64_t>(key) >> 32 : static_cast<uint32_t>(key);
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
-		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		const KeyT previous = point_list_keys[idx - 1];
+		const uint32_t prevtile = sizeof(KeyT) == 8 ? static_cast<uint64_t>(previous) >> 32 : static_cast<uint32_t>(previous);
 		if (currtile != prevtile)
 		{
 			ranges[prevtile].y = idx;
@@ -122,6 +131,46 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	}
 	if (idx == L - 1)
 		ranges[currtile].y = L;
+}
+
+__global__ void gatherDepthKeys(int count, const uint32_t* ids,
+	const float* depths, uint32_t* keys)
+{
+	const unsigned int rank = blockIdx.x * blockDim.x + threadIdx.x;
+	if (rank < count) keys[rank] = __float_as_uint(depths[ids[rank]]);
+}
+
+__global__ void gatherOrderedTileCounts(int count, const uint32_t* ids,
+	const uint32_t* tiles_touched, uint32_t* ordered_tiles)
+{
+	const unsigned int rank = blockIdx.x * blockDim.x + threadIdx.x;
+	if (rank < count) ordered_tiles[rank] = tiles_touched[ids[rank]];
+}
+
+__global__ void scatterDepthOffsets(int count, const uint32_t* sorted_ids,
+	const uint32_t* ordered_inclusive_offsets, uint32_t* starts_by_id)
+{
+	const unsigned int rank = blockIdx.x * blockDim.x + threadIdx.x;
+	if (rank < count)
+		starts_by_id[sorted_ids[rank]] = rank ? ordered_inclusive_offsets[rank - 1] : 0;
+}
+
+// Faster-GS separate sorting (Apache-2.0 reference; see THIRD_PARTY_LICENSES):
+// contiguous emission segments follow global depth order, then a stable sort
+// groups by tile only. Primitive IDs still address the original 2DGS arrays.
+template<typename KeyT, bool TileCulling, bool LoadBalance>
+__global__ void duplicateDepthOrdered(
+	int count, const uint32_t* tiles_touched, const uint4* tile_bounds,
+	const TileSupport* tile_supports, const uint32_t* offsets,
+	KeyT* keys, uint32_t* values, dim3 grid, int threshold)
+{
+	const unsigned int primitive = blockIdx.x * blockDim.x + threadIdx.x;
+	const bool active = primitive < count && tiles_touched[primitive] > 0;
+	const uint4 bounds = active ? tile_bounds[primitive] : make_uint4(0, 0, 0, 0);
+	const TileSupport support = active && TileCulling ? tile_supports[primitive] : unrestricted_tile_support();
+	const uint32_t offset = active ? offsets[primitive] : 0;
+	enumerate_tiles<true>(primitive, bounds, support, 0.0f, offset, grid.x,
+		active, TileCulling, LoadBalance, threshold, keys, values);
 }
 
 __global__ void countTileBuckets(int tiles, const uint2* ranges, uint32_t* counts)
@@ -190,19 +239,59 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	return img;
 }
 
-CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P, int F)
+CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(
+	char*& chunk, size_t P, int F, bool separate_sort, int tiles)
 {
-	BinningState binning;
+	BinningState binning{};
 	obtain(chunk, binning.point_list, P, 128);
 	obtain(chunk, binning.point_list_unsorted, P, 128);
-	obtain(chunk, binning.point_list_keys, P, 128);
-	obtain(chunk, binning.point_list_keys_unsorted, P, 128);
-	cub::DeviceRadixSort::SortPairs(
-		nullptr, binning.sorting_size,
-		binning.point_list_keys_unsorted, binning.point_list_keys,
-		binning.point_list_unsorted, binning.point_list, P);
+	if (!separate_sort)
+	{
+		obtain(chunk, binning.point_list_keys, P, 128);
+		obtain(chunk, binning.point_list_keys_unsorted, P, 128);
+		cub::DeviceRadixSort::SortPairs(nullptr, binning.sorting_size,
+			binning.point_list_keys_unsorted, binning.point_list_keys,
+			binning.point_list_unsorted, binning.point_list, P);
+	}
+	else if (tiles <= 65536)
+	{
+		obtain(chunk, binning.tile_keys16, P, 128);
+		obtain(chunk, binning.tile_keys16_unsorted, P, 128);
+		cub::DeviceRadixSort::SortPairs(nullptr, binning.sorting_size,
+			binning.tile_keys16_unsorted, binning.tile_keys16,
+			binning.point_list_unsorted, binning.point_list, P, 0, getHigherMsb(tiles - 1));
+	}
+	else
+	{
+		obtain(chunk, binning.tile_keys32, P, 128);
+		obtain(chunk, binning.tile_keys32_unsorted, P, 128);
+		cub::DeviceRadixSort::SortPairs(nullptr, binning.sorting_size,
+			binning.tile_keys32_unsorted, binning.tile_keys32,
+			binning.point_list_unsorted, binning.point_list, P, 0, getHigherMsb(tiles - 1));
+	}
 	obtain(chunk, binning.list_sorting_space, binning.sorting_size, 128);
 	return binning;
+}
+
+CudaRasterizer::DepthSortState CudaRasterizer::DepthSortState::fromChunk(char*& chunk, size_t P, int F)
+{
+	DepthSortState state;
+	obtain(chunk, state.visible_ids, P, 128);
+	obtain(chunk, state.sorted_ids, P, 128);
+	obtain(chunk, state.depth_keys, P, 128);
+	obtain(chunk, state.depth_keys_unsorted, P, 128);
+	obtain(chunk, state.ordered_tiles, P, 128);
+	obtain(chunk, state.counts, 2, 128);
+	cub::DeviceSelect::Flagged(nullptr, state.selection_size,
+		cub::CountingInputIterator<uint32_t>(0), VisibleFlags(state.ordered_tiles, HasTouchedTile{}),
+		state.visible_ids, state.counts + 1, P);
+	cub::DeviceReduce::Sum(nullptr, state.reduction_size, state.ordered_tiles, state.counts, P);
+	cub::DoubleBuffer<uint32_t> depth_keys(state.depth_keys_unsorted, state.depth_keys);
+	cub::DoubleBuffer<uint32_t> ids(state.visible_ids, state.sorted_ids);
+	cub::DeviceRadixSort::SortPairs(nullptr, state.sorting_size, depth_keys, ids, P);
+	const size_t workspace_size = std::max(state.selection_size, std::max(state.reduction_size, state.sorting_size));
+	obtain(chunk, state.workspace, workspace_size, 128);
+	return state;
 }
 
 CudaRasterizer::BucketState CudaRasterizer::BucketState::fromChunk(char*& chunk, size_t tiles, size_t capacity)
@@ -263,7 +352,8 @@ int CudaRasterizer::Rasterizer::forward(
 	bool load_balance,
 	int tile_culling_threshold,
 	bool gaussian_backward,
-	bool warp_culling)
+	bool warp_culling,
+	bool separate_sort)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -273,10 +363,13 @@ int CudaRasterizer::Rasterizer::forward(
 	// Forward-only bounds follow the established geometry layout. Backward can
 	// reconstruct its unchanged state and ignore these trailing checkpoints.
 	if (warp_culling) chunk_size += size_t(P) * sizeof(float4) + 128;
+	if (separate_sort) chunk_size += required<DepthSortState>(P, F);
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, F);
 	float4* pixel_bounds = nullptr;
 	if (warp_culling) obtain(chunkptr, pixel_bounds, P, 128);
+	DepthSortState depthState{};
+	if (separate_sort) depthState = DepthSortState::fromChunk(chunkptr, P, F);
 
 	if (radii == nullptr)
 	{
@@ -350,26 +443,82 @@ int CudaRasterizer::Rasterizer::forward(
 	), debug)
 	preprocess_timing.stop();
 
-	// Compute prefix sum over full list of touched tile counts by Gaussians
-	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
-	Profiling::Scope scan_timing("forward.scan");
-	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
-	scan_timing.stop();
+	if (separate_sort)
+	{
+		// Stable selection preserves primitive-index order for equal depths.
+		// Atomic visibility compaction would make these ties nondeterministic.
+		Profiling::Scope selection_timing("forward.visible_compaction");
+		CHECK_CUDA(cub::DeviceSelect::Flagged(depthState.workspace, depthState.selection_size,
+			cub::CountingInputIterator<uint32_t>(0), VisibleFlags(geomState.tiles_touched, HasTouchedTile{}),
+			depthState.visible_ids, depthState.counts + 1, P), debug)
+		selection_timing.stop();
+		Profiling::Scope reduction_timing("forward.count_reduce");
+		CHECK_CUDA(cub::DeviceReduce::Sum(depthState.workspace, depthState.reduction_size,
+			geomState.tiles_touched, depthState.counts, P), debug)
+	}
+	else
+	{
+		Profiling::Scope scan_timing("forward.scan");
+		CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size,
+			geomState.tiles_touched, geomState.point_offsets, P), debug)
+	}
 
 	// Retrieve total number of Gaussian instances to launch and resize aux buffers
 	int num_rendered;
+	int num_visible = 0;
 	Profiling::Scope count_timing("forward.count_download");
-	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+	if (separate_sort)
+	{
+		uint32_t counts[2];
+		CHECK_CUDA(cudaMemcpy(counts, depthState.counts, sizeof(counts), cudaMemcpyDeviceToHost), debug)
+		if (counts[0] > std::numeric_limits<int>::max())
+			throw std::runtime_error("Primitive/tile instance count exceeds the supported int32 range");
+		num_rendered = counts[0];
+		num_visible = counts[1];
+	}
+	else
+	{
+		CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1,
+			sizeof(int), cudaMemcpyDeviceToHost), debug)
+	}
 	count_timing.stop();
 
+	if (separate_sort && num_visible > 0)
+	{
+		Profiling::Scope depth_timing("forward.depth_sort");
+		gatherDepthKeys<<<(num_visible + 255) / 256, 256>>>(num_visible,
+			depthState.visible_ids, geomState.depths, depthState.depth_keys_unsorted);
+		cub::DoubleBuffer<uint32_t> depth_keys(depthState.depth_keys_unsorted, depthState.depth_keys);
+		cub::DoubleBuffer<uint32_t> ids(depthState.visible_ids, depthState.sorted_ids);
+		CHECK_CUDA(cub::DeviceRadixSort::SortPairs(depthState.workspace, depthState.sorting_size,
+			depth_keys, ids, num_visible), debug)
+		depthState.sorted_ids = ids.Current();
+		depth_timing.stop();
+		Profiling::Scope order_timing("forward.depth_order");
+		gatherOrderedTileCounts<<<(num_visible + 255) / 256, 256>>>(num_visible,
+			depthState.sorted_ids, geomState.tiles_touched, depthState.ordered_tiles);
+		CHECK_CUDA(, debug)
+		order_timing.stop();
+		Profiling::Scope depth_scan_timing("forward.depth_scan");
+		CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size,
+			depthState.ordered_tiles, depthState.ordered_tiles, num_visible), debug)
+		depth_scan_timing.stop();
+		// Segment addresses stay in depth order; reads of large per-primitive
+		// surfel records stay coalesced in the original array order.
+		Profiling::Scope scatter_timing("forward.depth_order");
+		scatterDepthOffsets<<<(num_visible + 255) / 256, 256>>>(num_visible,
+			depthState.sorted_ids, depthState.ordered_tiles, geomState.point_offsets);
+		CHECK_CUDA(, debug)
+	}
+
 	Profiling::Scope binning_timing("forward.allocate_binning");
-	size_t binning_chunk_size = required<BinningState>(num_rendered, F);
 	const int num_tiles = tile_grid.x * tile_grid.y;
+	size_t binning_chunk_size = required<BinningState>(num_rendered, F, separate_sort, num_tiles);
 	const int bucket_capacity = gaussian_backward ? bucketCapacity(num_rendered, num_tiles) : 0;
 	if (gaussian_backward)
 		binning_chunk_size += required<BucketState>(num_tiles, bucket_capacity);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
-	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, F);
+	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, F, separate_sort, num_tiles);
 	BucketState bucketState{};
 	if (gaussian_backward)
 		bucketState = BucketState::fromChunk(binning_chunkptr, num_tiles, bucket_capacity);
@@ -380,6 +529,21 @@ int CudaRasterizer::Rasterizer::forward(
 	Profiling::Scope duplicate_timing("forward.duplicate");
 	auto launch_duplicate = [&](auto culling_mode, auto balance_mode)
 	{
+		if (separate_sort)
+		{
+			if (num_visible == 0) return;
+			auto launch_depth_ordered = [&](auto* keys)
+			{
+				using KeyT = std::remove_pointer_t<decltype(keys)>;
+				duplicateDepthOrdered<KeyT, decltype(culling_mode)::value, decltype(balance_mode)::value>
+					<<<(P + 255) / 256, 256>>>(P, geomState.tiles_touched,
+						geomState.tile_bounds, geomState.tile_supports, geomState.point_offsets,
+						keys, binningState.point_list_unsorted, tile_grid, tile_culling_threshold);
+			};
+			if (num_tiles <= 65536) launch_depth_ordered(binningState.tile_keys16_unsorted);
+			else launch_depth_ordered(binningState.tile_keys32_unsorted);
+			return;
+		}
 		duplicateWithKeys<decltype(culling_mode)::value, decltype(balance_mode)::value> << <(P + 255) / 256, 256 >> > (
 		P,
 		geomState.tile_bounds,
@@ -411,23 +575,40 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Sort complete list of (duplicated) Gaussian indices by keys
 	Profiling::Scope sort_timing("forward.sort");
-	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
-		binningState.list_sorting_space,
-		binningState.sorting_size,
-		binningState.point_list_keys_unsorted, binningState.point_list_keys,
-		binningState.point_list_unsorted, binningState.point_list,
-		num_rendered, 0, 32 + bit), debug)
+	if (separate_sort)
+	{
+		auto sort_tiles = [&](auto* keys_in, auto* keys_out)
+		{
+			if (num_rendered > 0)
+				CHECK_CUDA(cub::DeviceRadixSort::SortPairs(binningState.list_sorting_space,
+					binningState.sorting_size, keys_in, keys_out, binningState.point_list_unsorted,
+					binningState.point_list, num_rendered, 0, getHigherMsb(num_tiles - 1)), debug)
+		};
+		if (num_tiles <= 65536) sort_tiles(binningState.tile_keys16_unsorted, binningState.tile_keys16);
+		else sort_tiles(binningState.tile_keys32_unsorted, binningState.tile_keys32);
+	}
+	else
+	{
+		CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+			binningState.list_sorting_space, binningState.sorting_size,
+			binningState.point_list_keys_unsorted, binningState.point_list_keys,
+			binningState.point_list_unsorted, binningState.point_list,
+			num_rendered, 0, 32 + bit), debug)
+	}
 	sort_timing.stop();
 
 	Profiling::Scope tile_ranges_timing("forward.tile_ranges");
 	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
 
 	// Identify start and end of per-tile workloads in sorted list
-	if (num_rendered > 0)
-		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
-			num_rendered,
-			binningState.point_list_keys,
-			imgState.ranges);
+	auto identify_ranges = [&](auto* keys)
+	{
+		if (num_rendered > 0)
+			identifyTileRanges<<<(num_rendered + 255) / 256, 256>>>(num_rendered, keys, imgState.ranges);
+	};
+	if (!separate_sort) identify_ranges(binningState.point_list_keys);
+	else if (num_tiles <= 65536) identify_ranges(binningState.tile_keys16);
+	else identify_ranges(binningState.tile_keys32);
 	CHECK_CUDA(, debug)
 	tile_ranges_timing.stop();
 
@@ -532,11 +713,13 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dsh2_rest,
 	bool gaussian_backward,
 	const float* final_image,
-	const float* final_aux)
+	const float* final_aux,
+	bool separate_sort)
 {
 	Profiling::Scope allocate_timing("backward.allocate");
+	const int num_tiles = ((width + BLOCK_X - 1) / BLOCK_X) * ((height + BLOCK_Y - 1) / BLOCK_Y);
 	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, F);
-	BinningState binningState = BinningState::fromChunk(binning_buffer, R, F);
+	BinningState binningState = BinningState::fromChunk(binning_buffer, R, F, separate_sort, num_tiles);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height, F);
 	allocate_timing.stop();
 
@@ -550,7 +733,6 @@ void CudaRasterizer::Rasterizer::backward(
 
 	const dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
 	const dim3 block(BLOCK_X, BLOCK_Y, 1);
-	const int num_tiles = tile_grid.x * tile_grid.y;
 	const int bucket_capacity = gaussian_backward ? bucketCapacity(R, num_tiles) : 0;
 	BucketState bucketState{};
 	if (gaussian_backward)

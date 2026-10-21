@@ -71,22 +71,26 @@ class _RasterizeGabors(torch.autograd.Function):
         culled = raster_settings.tile_culling or raster_settings.load_balance
         gaussian_backward = raster_settings.gaussian_backward
         warp_culling = raster_settings.warp_culling
-        if fused or raster_settings.tight_bbox or culled or gaussian_backward or warp_culling:
+        separate_sort = raster_settings.separate_sort
+        if fused or raster_settings.tight_bbox or culled or gaussian_backward or warp_culling or separate_sort:
             args += (sh_rest, sh2_rest, split_sh, raw_inputs)
             native_forward = _C.rasterize_gabors_fused
-        if raster_settings.tight_bbox or culled or gaussian_backward or warp_culling:
+        if raster_settings.tight_bbox or culled or gaussian_backward or warp_culling or separate_sort:
             args += (raster_settings.tight_bbox,)
             native_forward = _C.rasterize_gabors_bounded
-        if culled or gaussian_backward or warp_culling:
+        if culled or gaussian_backward or warp_culling or separate_sort:
             args += (raster_settings.tile_culling, raster_settings.load_balance,
                      raster_settings.tile_culling_threshold)
             native_forward = _C.rasterize_gabors_culled
-        if gaussian_backward or warp_culling:
+        if gaussian_backward or warp_culling or separate_sort:
             args += (gaussian_backward,)
             native_forward = _C.rasterize_gabors_gaussian_backward
-        if warp_culling:
+        if warp_culling or separate_sort:
             args += (warp_culling,)
             native_forward = _C.rasterize_gabors_warp_culled
+        if separate_sort:
+            args += (separate_sort,)
+            native_forward = _C.rasterize_gabors_separate_sorted
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -130,12 +134,17 @@ class _RasterizeGabors(torch.autograd.Function):
             geometry, ctx.num_rendered, binning, image, settings.debug,
         )
         native_backward = _C.rasterize_gabors_backward
-        if ctx.fused or settings.gaussian_backward:
+        if ctx.fused or settings.gaussian_backward or settings.separate_sort:
             args += (sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs)
             native_backward = _C.rasterize_gabors_backward_fused
-        if settings.gaussian_backward:
-            args += (settings.gaussian_backward, *ctx.saved_tensors[17:])
+        if settings.gaussian_backward or settings.separate_sort:
+            checkpoints = (ctx.saved_tensors[17:] if settings.gaussian_backward
+                           else (means3D.new_empty((0,)), means3D.new_empty((0,))))
+            args += (settings.gaussian_backward, *checkpoints)
             native_backward = _C.rasterize_gabors_backward_gaussian
+        if settings.separate_sort:
+            args += (settings.separate_sort,)
+            native_backward = _C.rasterize_gabors_backward_separate_sorted
         if settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
@@ -178,6 +187,7 @@ class GaborRasterizationSettings(NamedTuple):
     tile_culling_threshold: int = 4
     gaussian_backward: bool = False
     warp_culling: bool = False
+    separate_sort: bool = False
 
 
 class GaborRasterizer(nn.Module):
@@ -211,6 +221,8 @@ class GaborRasterizer(nn.Module):
         primitive-owned backward accumulation; False retains per-pixel backward.
         ``warp_culling`` skips a primitive for a whole pixel warp when its
         conservative projected support misses that warp's pixel rectangle.
+        ``separate_sort`` orders primitives by depth before duplication, then
+        stably sorts duplicated entries using only their tile identifiers.
         """
         threshold = self.raster_settings.tile_culling_threshold
         if type(threshold) is not int or not 0 <= threshold <= 32:
