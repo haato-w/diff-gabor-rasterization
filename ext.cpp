@@ -12,6 +12,7 @@
 #include <torch/extension.h>
 #include <pybind11/stl.h>
 #include "rasterize_points.h"
+#include "project_errors.h"
 #include "cuda_rasterizer/profiling.h"
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -27,6 +28,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rasterize_gabors_backward_gaussian", &RasterizeGaborsBackwardGaussianCUDA);
   m.def("rasterize_gabors_backward_separate_sorted", &RasterizeGaborsBackwardSeparateSortedCUDA);
   m.def("rasterize_gabors_backward_butterfly", &RasterizeGaborsBackwardButterflyCUDA);
+  m.def("project_errors", &ProjectErrorsCUDA);
   m.def("mark_visible", &markVisible);
   m.def("set_profiling_enabled", &CudaRasterizer::Profiling::setEnabled);
   m.def("collect_profiling", &CudaRasterizer::Profiling::collect);

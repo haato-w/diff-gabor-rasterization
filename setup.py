@@ -23,9 +23,11 @@ class HeaderAwareBuildExtension(BuildExtension):
         # layout across translation units can then corrupt GPU memory. Invalidate
         # this extension's derived objects when any local CUDA header changes.
         source_root = Path(__file__).resolve().parent
-        headers = list((source_root / "cuda_rasterizer").glob("*.h"))
-        headers += list((source_root / "cuda_rasterizer").glob("*.cuh"))
-        headers.append(source_root / "rasterize_points.h")
+        headers = []
+        for directory in ("cuda_rasterizer", "cuda_projector"):
+            headers.extend((source_root / directory).glob("*.h"))
+            headers.extend((source_root / directory).glob("*.cuh"))
+        headers.extend(source_root / name for name in ("rasterize_points.h", "project_errors.h"))
         objects = list(Path(self.build_temp).rglob("*.o"))
         newest_header = max(header.stat().st_mtime_ns for header in headers)
         if any(obj.stat().st_mtime_ns < newest_header for obj in objects):
@@ -46,6 +48,9 @@ setup(
             "cuda_rasterizer/profiling.cu",
             "cuda_rasterizer/forward.cu",
             "cuda_rasterizer/backward.cu",
+            "cuda_projector/projector_impl.cu",
+            "cuda_projector/forward.cu",
+            "project_errors.cu",
             "rasterize_points.cu",
             "ext.cpp"],
             extra_compile_args={"nvcc": ["-I" + os.path.join(os.path.dirname(os.path.abspath(__file__)), "third_party/glm/")]})

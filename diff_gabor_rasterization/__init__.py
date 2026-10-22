@@ -13,6 +13,7 @@ from typing import NamedTuple
 import torch.nn as nn
 import torch
 from . import _C
+from .projector import project_errors
 
 
 def set_profiling_enabled(enabled: bool):
