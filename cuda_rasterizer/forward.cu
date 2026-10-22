@@ -556,6 +556,16 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ float4 collected_bounds[WarpCulling ? BLOCK_SIZE : 1];
+	__shared__ float2 frequency_directions[4];
+	if (thread < F)
+	{
+		// Keep the runtime SFU expression: constant-folded directions can
+		// change phase/gradient rounding for tiny projective surfels.
+		const float angle = PI * float(thread) / float(F);
+		frequency_directions[thread] = make_float2(__cosf(angle), __sinf(angle));
+	}
+	// The existing batch barriers publish these four directions. All pixels
+	// share them for every primitive, without per-thread direction arrays.
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -676,22 +686,6 @@ renderCUDA(
 			// if (rho >= 1.0)
 			// 	continue;
 			
-			float harmonic1 = 0.0f;
-			float harmonic2 = 0.0f;
-			for (int i = 0; i < F; i++)
-			{
-				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
-				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
-				const float phase = geo_phases[collected_id[j] * F + i];
-				const float angle_vec_x = __cosf(PI * (float)i / (float)F);
-				const float angle_vec_y = __sinf(PI * (float)i / (float)F);
-				const float dot_value = angle_vec_x * s.x + angle_vec_y * s.y;
-				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
-				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
-			}
-			// harmonic1 = (1.0 < harmonic1) ? 1.0f : harmonic1;
-			// harmonic2 = (1.0 < harmonic2) ? 1.0f : harmonic2;
-
 			// Eq. (2) from 3D Gaussian splatting paper.
 			// Obtain alpha by multiplying with Gaussian opacity
 			// and its exponential falloff from mean.
@@ -704,6 +698,21 @@ renderCUDA(
 			{
 				done = true;
 				continue;
+			}
+
+			// Alpha and termination do not depend on Gabor color. Evaluate
+			// harmonics only for contributions that reach RGB accumulation.
+			float harmonic1 = 0.0f;
+			float harmonic2 = 0.0f;
+			for (int i = 0; i < F; i++)
+			{
+				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
+				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
+				const float phase = geo_phases[collected_id[j] * F + i];
+				const float2 direction = frequency_directions[i];
+				const float dot_value = direction.x * s.x + direction.y * s.y;
+				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
+				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
 			}
 
 			float w = alpha * T;

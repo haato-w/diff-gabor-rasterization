@@ -159,6 +159,7 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 	const bool warp_culling = false,
 	const bool separate_sort = false)
 {
+  TORCH_CHECK(F >= 1 && F <= 4, "F must be between 1 and 4");
   TORCH_CHECK(tile_culling_threshold >= 0 && tile_culling_threshold <= 32,
               "tile_culling_threshold must be between 0 and 32");
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
@@ -341,6 +342,7 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
   CHECK_INPUT(imageBuffer);
   CHECK_INPUT(geomBuffer);
 
+  TORCH_CHECK(F >= 1 && F <= 4, "F must be between 1 and 4");
   const c10::cuda::CUDAGuard device_guard(means3D.device());
   if (split_sh || raw_inputs || gaussian_backward || separate_sort) {
     TORCH_CHECK(means3D.dim() == 2 && means3D.size(1) == 3,

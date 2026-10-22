@@ -207,6 +207,14 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	// __shared__ float collected_depths[BLOCK_SIZE];
+	__shared__ float2 frequency_directions[4];
+	if (block.thread_rank() < F)
+	{
+		// Match the forward runtime direction values. The first existing
+		// batch barrier publishes them before any pixel evaluates Gabor.
+		const float angle = PI * float(block.thread_rank()) / float(F);
+		frequency_directions[block.thread_rank()] = make_float2(__cosf(angle), __sinf(angle));
+	}
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -357,17 +365,14 @@ renderCUDA(
 
 			float harmonic1 = 0.0f;
 			float harmonic2 = 0.0f;
-			float angle_vec_x[10]; // Currently, 10 is a MAX candidate num.
-			float angle_vec_y[10];
 			float dot_value[10];
 			for (int i = 0; i < F; i++)
 			{
 				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
 				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
 				const float phase = collected_phases[i * BLOCK_SIZE + j];
-				angle_vec_x[i] = __cosf(PI * (float)i / (float)F);
-				angle_vec_y[i] = __sinf(PI * (float)i / (float)F);
-				dot_value[i] = angle_vec_x[i] * s.x + angle_vec_y[i] * s.y;
+				const float2 direction = frequency_directions[i];
+				dot_value[i] = direction.x * s.x + direction.y * s.y;
 				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
 				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
 			}
@@ -425,8 +430,9 @@ renderCUDA(
 				atomicAdd(&(dL_dphases[global_id * F + i]), dchannel_dcolor * tmp_for_dphases);
 
 				const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
-				tmp_for_dsx += tmp * angle_vec_x[i];
-				tmp_for_dsy += tmp * angle_vec_y[i];
+				const float2 direction = frequency_directions[i];
+				tmp_for_dsx += tmp * direction.x;
+				tmp_for_dsy += tmp * direction.y;
 			}
 			const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
 			const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
