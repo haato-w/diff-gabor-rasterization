@@ -12,11 +12,14 @@
 #include "backward.h"
 #include "auxiliary.h"
 #include "per_gaussian_backward.h"
+#include "warp_gradient_reduction.h"
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
 #include <stdio.h>
+#include <type_traits>
+#include <stdexcept>
 
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
@@ -143,7 +146,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C>
+template <uint32_t C, bool Reduction = false, int Frequencies = 4>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -174,10 +177,14 @@ renderCUDA(
 	float* __restrict__ dL_dphases, 
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2, 
-	float* d_image)
+	float* d_image,
+	int reduction_threshold)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
+	const unsigned int lane = block.thread_rank() & 31;
+	const int n_frequencies = Reduction ? Frequencies : F;
+	using Gradients = PixelGradients<C, Frequencies>;
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
@@ -307,238 +314,280 @@ renderCUDA(
 		block.sync();
 
 		// Iterate over Gaussians
-		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		for (int j = 0; (Reduction || !done) && j < min(BLOCK_SIZE, toDo); j++)
 		{
-			// Keep track of current Gaussian ID. Skip, if this one
-			// is behind the last contributor for this pixel.
-			contributor--;
-			if (contributor >= last_contributor)
-				continue;
-
-			// compute ray-splat intersection as before
-			// Fisrt compute two homogeneous planes, See Eq. (8)
-			const float2 xy = collected_xy[j];
-			// const float2 frequency_vec = collected_frequency[j];
-			// const float wave_length = collected_wave_length_in_pix[j];
-			const float3 Tu = collected_Tu[j];
-			const float3 Tv = collected_Tv[j];
-			const float3 Tw = collected_Tw[j];
-			float3 k = pix.x * Tw - Tu;
-			float3 l = pix.y * Tw - Tv;
-			float3 p = cross(k, l);
-			if (p.z == 0.0) continue;
-			float2 s = {p.x / p.z, p.y / p.z};
-			float rho3d = (s.x * s.x + s.y * s.y); 
-			float2 d = {xy.x - pixf.x, xy.y - pixf.y};
-			float rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y); 
-
-			// compute intersection and depth
-			float rho = min(rho3d, rho2d);
-			float c_d = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z; 
-			if (c_d < near_n) continue;
-			float4 nor_o = collected_normal_opacity[j];
-			float normal[3] = {nor_o.x, nor_o.y, nor_o.z};
-			float opa = nor_o.w;
-
-			// accumulations
-
-			float power = -0.5f * rho;
-			if (power > 0.0f)
-				continue;
-
-			const float G = exp(power);
-			const float alpha = min(0.99f, opa * G);
-			if (alpha < 1.0f / 255.0f)
-				continue;
-
-			T = T / (1.f - alpha);
-			const float dchannel_dcolor = alpha * T;
-			const float w = alpha * T;
-			// Propagate gradients to per-Gaussian colors and keep
-			// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
-			// pair).
-			float dL_dalpha = 0.0f;
-			float dL_dtmp = 0.0f;
-			const int global_id = collected_id[j];
-			// float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
-			// float dot_value = 1.0f;
-
-			float harmonic1 = 0.0f;
-			float harmonic2 = 0.0f;
-			float dot_value[10];
-			for (int i = 0; i < F; i++)
+			// The reduction kernel keeps a common primitive index across every
+			// lane, including edge pixels and rejected contributions. Only the
+			// geometric/alpha predicate diverges; all lanes reconverge below.
+			bool accepted = false;
+			float2 s, d;
+			float3 k, l, p, Tu, Tv, Tw;
+			float4 nor_o;
+			float rho3d, rho2d, c_d, G, alpha;
+			float normal[3];
+			do
 			{
-				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
-				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
-				const float phase = collected_phases[i * BLOCK_SIZE + j];
-				const float2 direction = frequency_directions[i];
-				dot_value[i] = direction.x * s.x + direction.y * s.y;
-				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-			}
+				if (done) break;
+				// Keep track of current Gaussian ID. Skip, if this one
+				// is behind the last contributor for this pixel.
+				contributor--;
+				if (contributor >= last_contributor)
+					break;
 
-			for (int ch = 0; ch < C; ch++)
+				// compute ray-splat intersection as before
+				// Fisrt compute two homogeneous planes, See Eq. (8)
+				const float2 xy = collected_xy[j];
+				// const float2 frequency_vec = collected_frequency[j];
+				// const float wave_length = collected_wave_length_in_pix[j];
+				Tu = collected_Tu[j];
+				Tv = collected_Tv[j];
+				Tw = collected_Tw[j];
+				k = pix.x * Tw - Tu;
+				l = pix.y * Tw - Tv;
+				p = cross(k, l);
+				if (p.z == 0.0) break;
+				s = {p.x / p.z, p.y / p.z};
+				rho3d = (s.x * s.x + s.y * s.y);
+				d = {xy.x - pixf.x, xy.y - pixf.y};
+				rho2d = FilterInvSquare * (d.x * d.x + d.y * d.y);
+
+				// compute intersection and depth
+				float rho = min(rho3d, rho2d);
+				c_d = (rho3d <= rho2d) ? (s.x * Tw.x + s.y * Tw.y) + Tw.z : Tw.z;
+				if (c_d < near_n) break;
+				nor_o = collected_normal_opacity[j];
+				normal[0] = nor_o.x;
+				normal[1] = nor_o.y;
+				normal[2] = nor_o.z;
+				float opa = nor_o.w;
+
+				// accumulations
+
+				float power = -0.5f * rho;
+				if (power > 0.0f)
+					break;
+
+				G = exp(power);
+				alpha = min(0.99f, opa * G);
+				if (alpha < 1.0f / 255.0f)
+					break;
+				accepted = true;
+			} while (false);
+
+			bool aggregate = false;
+			if constexpr (Reduction)
 			{
-				const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
-				const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
-				const float c = harmonic1 * c1 + harmonic2 * c2;
-				// const float c = harmonic1 * c1;
-				// const float c = collected_colors[ch * BLOCK_SIZE + j];
-				// Update last color (to be used in the next iteration)
-				accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
-				last_color[ch] = c;
-
-				const float dL_dchannel = dL_dpixel[ch];
-				dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
-
-				// Update the gradients w.r.t. color of the Gaussian. 
-				// Atomic, since this pixel is just one of potentially
-				// many that were affected by this Gaussian.
-				atomicAdd(&(dL_dcolors[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic1); // ここにfrequencyの重みを足す
-				atomicAdd(&(dL_dcolors2[global_id * C + ch]), dL_dchannel * dchannel_dcolor * harmonic2); // ここにfrequencyの重みを足す
-				// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
-
-				// if (ch == 2) {
-				// 	d_image[pix_id] += dL_dchannel * dchannel_dcolor * harmonic1;
-				// }
+				const unsigned int participating = __ballot_sync(0xffffffffu, accepted);
+				if (participating == 0) continue; // Uniform within this warp.
+				aggregate = __popc(participating) >= reduction_threshold;
 			}
-			// weight and freqency-length gradient
-			const float r0 = collected_colors[0 * BLOCK_SIZE + j];
-			const float g0 = collected_colors[1 * BLOCK_SIZE + j];
-			const float b0 = collected_colors[2 * BLOCK_SIZE + j];
-			const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
-			const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
-			const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
-
-			const float part1 = dL_dpixel[0] * (r0 + r1) + dL_dpixel[1] * (g0 + g1) + dL_dpixel[2] * (b0 + b1);
-			const float part2 = dL_dpixel[0] * (r0 - r1) + dL_dpixel[1] * (g0 - g1) + dL_dpixel[2] * (b0 - b1);
-			float tmp_for_dsx = 0.0f;
-			float tmp_for_dsy = 0.0f;
-			for (int i = 0; i < F; i++)
+			Gradients gradients;
+			if (accepted)
 			{
-				const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
-				const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
-				const float phase = collected_phases[i * BLOCK_SIZE + j];
 
-				const float dcolor_dw = 0.5f * (part1 + part2 * __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-				atomicAdd(&(dL_dweights_for_frequency_angle[global_id * F + i]), dchannel_dcolor * dcolor_dw);
+				T = T / (1.f - alpha);
+				const float dchannel_dcolor = alpha * T;
+				const float w = alpha * T;
+				// Propagate gradients to per-Gaussian colors and keep
+				// gradients w.r.t. alpha (blending factor for a Gaussian/pixel
+				// pair).
+				float dL_dalpha = 0.0f;
+				float dL_dtmp = 0.0f;
+				const int global_id = collected_id[j];
+				// float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
+				// float dot_value = 1.0f;
 
-				const float dcolor_df = -part2 * weight * PI * dot_value[i] * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
-				atomicAdd(&(dL_dfrequency_lengths[global_id * F + i]), dchannel_dcolor * dcolor_df);
+				float harmonic1 = 0.0f;
+				float harmonic2 = 0.0f;
+				float dot_value[Reduction ? Frequencies : 10];
+				for (int i = 0; i < n_frequencies; i++)
+				{
+					const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+					const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+					const float phase = collected_phases[i * BLOCK_SIZE + j];
+					const float2 direction = frequency_directions[i];
+					dot_value[i] = direction.x * s.x + direction.y * s.y;
+					harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+					harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+				}
 
-				const float tmp_for_dphases = -part2 * 0.5f * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
-				atomicAdd(&(dL_dphases[global_id * F + i]), dchannel_dcolor * tmp_for_dphases);
+				for (int ch = 0; ch < C; ch++)
+				{
+					const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
+					const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
+					const float c = harmonic1 * c1 + harmonic2 * c2;
+					// const float c = harmonic1 * c1;
+					// const float c = collected_colors[ch * BLOCK_SIZE + j];
+					// Update last color (to be used in the next iteration)
+					accum_rec[ch] = last_alpha * last_color[ch] + (1.f - last_alpha) * accum_rec[ch];
+					last_color[ch] = c;
 
-				const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
-				const float2 direction = frequency_directions[i];
-				tmp_for_dsx += tmp * direction.x;
-				tmp_for_dsy += tmp * direction.y;
-			}
-			const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
-			const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
+					const float dL_dchannel = dL_dpixel[ch];
+					dL_dalpha += (c - accum_rec[ch]) * dL_dchannel;
 
-			// d_image[pix_id] += dchannel_dcolor * dL_dw2;
+					// Update the gradients w.r.t. color of the Gaussian.
+					// Atomic, since this pixel is just one of potentially
+					// many that were affected by this Gaussian.
+					record_pixel_gradient<Reduction>(dL_dcolors + global_id * C + ch,
+						gradients.values[Gradients::Color1 + ch], dL_dchannel * dchannel_dcolor * harmonic1, aggregate);
+					record_pixel_gradient<Reduction>(dL_dcolors2 + global_id * C + ch,
+						gradients.values[Gradients::Color2 + ch], dL_dchannel * dchannel_dcolor * harmonic2, aggregate);
+					// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 
-			float dL_dz = 0.0f;
-			float dL_dweight = 0;
+					// if (ch == 2) {
+					// 	d_image[pix_id] += dL_dchannel * dchannel_dcolor * harmonic1;
+					// }
+				}
+				// weight and freqency-length gradient
+				const float r0 = collected_colors[0 * BLOCK_SIZE + j];
+				const float g0 = collected_colors[1 * BLOCK_SIZE + j];
+				const float b0 = collected_colors[2 * BLOCK_SIZE + j];
+				const float r1 = collected_colors2[0 * BLOCK_SIZE + j];
+				const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
+				const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
+
+				const float part1 = dL_dpixel[0] * (r0 + r1) + dL_dpixel[1] * (g0 + g1) + dL_dpixel[2] * (b0 + b1);
+				const float part2 = dL_dpixel[0] * (r0 - r1) + dL_dpixel[1] * (g0 - g1) + dL_dpixel[2] * (b0 - b1);
+				float tmp_for_dsx = 0.0f;
+				float tmp_for_dsy = 0.0f;
+				for (int i = 0; i < n_frequencies; i++)
+				{
+					const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
+					const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
+					const float phase = collected_phases[i * BLOCK_SIZE + j];
+
+					const float dcolor_dw = 0.5f * (part1 + part2 * __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
+					record_pixel_gradient<Reduction>(dL_dweights_for_frequency_angle + global_id * F + i,
+						gradients.values[Gradients::Weights + i], dchannel_dcolor * dcolor_dw, aggregate);
+
+					const float dcolor_df = -part2 * weight * PI * dot_value[i] * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
+					record_pixel_gradient<Reduction>(dL_dfrequency_lengths + global_id * F + i,
+						gradients.values[Gradients::Lengths + i], dchannel_dcolor * dcolor_df, aggregate);
+
+					const float tmp_for_dphases = -part2 * 0.5f * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
+					record_pixel_gradient<Reduction>(dL_dphases + global_id * F + i,
+						gradients.values[Gradients::Phases + i], dchannel_dcolor * tmp_for_dphases, aggregate);
+
+					const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
+					const float2 direction = frequency_directions[i];
+					tmp_for_dsx += tmp * direction.x;
+					tmp_for_dsy += tmp * direction.y;
+				}
+				const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
+				const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
+
+				// d_image[pix_id] += dchannel_dcolor * dL_dw2;
+
+				float dL_dz = 0.0f;
+				float dL_dweight = 0;
 #if RENDER_AXUTILITY
-			const float m_d = far_n / (far_n - near_n) * (1 - near_n / c_d);
-			const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * c_d * c_d);
-			if (contributor == median_contributor-1) {
-				dL_dz += dL_dmedian_depth;
-				// dL_dweight += dL_dmax_dweight;
-			}
+				const float m_d = far_n / (far_n - near_n) * (1 - near_n / c_d);
+				const float dmd_dd = (far_n * near_n) / ((far_n - near_n) * c_d * c_d);
+				if (contributor == median_contributor-1) {
+					dL_dz += dL_dmedian_depth;
+					// dL_dweight += dL_dmax_dweight;
+				}
 #if DETACH_WEIGHT 
-			// if not detached weight, sometimes 
-			// it will bia toward creating extragated 2D Gaussians near front
-			dL_dweight += 0;
+				// if not detached weight, sometimes
+				// it will bia toward creating extragated 2D Gaussians near front
+				dL_dweight += 0;
 #else
-			dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
+				dL_dweight += (final_D2 + m_d * m_d * final_A - 2 * m_d * final_D) * dL_dreg;
 #endif
-			dL_dalpha += dL_dweight - last_dL_dT;
-			// propagate the current weight W_{i} to next weight W_{i-1}
-			last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
-			const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
-			dL_dz += dL_dmd * dmd_dd;
+				dL_dalpha += dL_dweight - last_dL_dT;
+				// propagate the current weight W_{i} to next weight W_{i-1}
+				last_dL_dT = dL_dweight * alpha + (1 - alpha) * last_dL_dT;
+				const float dL_dmd = 2.0f * (T * alpha) * (m_d * final_A - final_D) * dL_dreg;
+				dL_dz += dL_dmd * dmd_dd;
 
-			// Propagate gradients w.r.t ray-splat depths
-			accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
-			last_depth = c_d;
-			dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
-			// Propagate gradients w.r.t. color ray-splat alphas
-			accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
-			dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
+				// Propagate gradients w.r.t ray-splat depths
+				accum_depth_rec = last_alpha * last_depth + (1.f - last_alpha) * accum_depth_rec;
+				last_depth = c_d;
+				dL_dalpha += (c_d - accum_depth_rec) * dL_ddepth;
+				// Propagate gradients w.r.t. color ray-splat alphas
+				accum_alpha_rec = last_alpha * 1.0 + (1.f - last_alpha) * accum_alpha_rec;
+				dL_dalpha += (1 - accum_alpha_rec) * dL_daccum;
 
-			// Propagate gradients to per-Gaussian normals
-			for (int ch = 0; ch < 3; ch++) {
-				accum_normal_rec[ch] = last_alpha * last_normal[ch] + (1.f - last_alpha) * accum_normal_rec[ch];
-				last_normal[ch] = normal[ch];
-				dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
-				atomicAdd((&dL_dnormal3D[global_id * 3 + ch]), alpha * T * dL_dnormal2D[ch]);
-			}
+				// Propagate gradients to per-Gaussian normals
+				for (int ch = 0; ch < 3; ch++) {
+					accum_normal_rec[ch] = last_alpha * last_normal[ch] + (1.f - last_alpha) * accum_normal_rec[ch];
+					last_normal[ch] = normal[ch];
+					dL_dalpha += (normal[ch] - accum_normal_rec[ch]) * dL_dnormal2D[ch];
+					record_pixel_gradient<Reduction>(dL_dnormal3D + global_id * 3 + ch,
+						gradients.values[Gradients::Normal + ch], alpha * T * dL_dnormal2D[ch], aggregate);
+				}
 #endif
 
-			dL_dalpha *= T;
-			// Update last alpha (to be used in the next iteration)
-			last_alpha = alpha;
+				dL_dalpha *= T;
+				// Update last alpha (to be used in the next iteration)
+				last_alpha = alpha;
 
-			// Account for fact that alpha also influences how much of
-			// the background color is added if nothing left to blend
-			float bg_dot_dpixel = 0;
-			for (int i = 0; i < C; i++)
-				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
-			dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
+				// Account for fact that alpha also influences how much of
+				// the background color is added if nothing left to blend
+				float bg_dot_dpixel = 0;
+				for (int i = 0; i < C; i++)
+					bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
+				dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
 
 
-			// Helpful reusable temporary variables
-			const float dL_dG = nor_o.w * dL_dalpha;
+				// Helpful reusable temporary variables
+				const float dL_dG = nor_o.w * dL_dalpha;
 #if RENDER_AXUTILITY
-			dL_dz += alpha * T * dL_ddepth; 
+				dL_dz += alpha * T * dL_ddepth;
 #endif
 
-			if (rho3d <= rho2d) {
-				// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
-				const float2 dL_ds = {
-					dL_dG * -G * s.x + dL_dsx + dL_dz * Tw.x,
-					dL_dG * -G * s.y + dL_dsy + dL_dz * Tw.y
-				};
-				const float3 dz_dTw = {s.x, s.y, 1.0};
-				const float dsx_pz = dL_ds.x / p.z;
-				const float dsy_pz = dL_ds.y / p.z;
-				const float3 dL_dp = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
-				const float3 dL_dk = cross(l, dL_dp);
-				const float3 dL_dl = cross(dL_dp, k);
+				if (rho3d <= rho2d) {
+					// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
+					const float2 dL_ds = {
+						dL_dG * -G * s.x + dL_dsx + dL_dz * Tw.x,
+						dL_dG * -G * s.y + dL_dsy + dL_dz * Tw.y
+					};
+					const float3 dz_dTw = {s.x, s.y, 1.0};
+					const float dsx_pz = dL_ds.x / p.z;
+					const float dsy_pz = dL_ds.y / p.z;
+					const float3 dL_dp = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
+					const float3 dL_dk = cross(l, dL_dp);
+					const float3 dL_dl = cross(dL_dp, k);
 
-				const float3 dL_dTu = {-dL_dk.x, -dL_dk.y, -dL_dk.z};
-				const float3 dL_dTv = {-dL_dl.x, -dL_dl.y, -dL_dl.z};
-				const float3 dL_dTw = {
-					pixf.x * dL_dk.x + pixf.y * dL_dl.x + dL_dz * dz_dTw.x, 
-					pixf.x * dL_dk.y + pixf.y * dL_dl.y + dL_dz * dz_dTw.y, 
-					pixf.x * dL_dk.z + pixf.y * dL_dl.z + dL_dz * dz_dTw.z};
+					const float3 dL_dTu = {-dL_dk.x, -dL_dk.y, -dL_dk.z};
+					const float3 dL_dTv = {-dL_dl.x, -dL_dl.y, -dL_dl.z};
+					const float3 dL_dTw = {
+						pixf.x * dL_dk.x + pixf.y * dL_dl.x + dL_dz * dz_dTw.x,
+						pixf.x * dL_dk.y + pixf.y * dL_dl.y + dL_dz * dz_dTw.y,
+						pixf.x * dL_dk.z + pixf.y * dL_dl.z + dL_dz * dz_dTw.z};
 
 
-				// Update gradients w.r.t. 3D covariance (3x3 matrix)
-				atomicAdd(&dL_dtransMat[global_id * 9 + 0],  dL_dTu.x);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 1],  dL_dTu.y);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 2],  dL_dTu.z);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 3],  dL_dTv.x);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 4],  dL_dTv.y);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 5],  dL_dTv.z);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 6],  dL_dTw.x);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 7],  dL_dTw.y);
-				atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dTw.z);
-			} else {
-				// // Update gradients w.r.t. center of Gaussian 2D mean position
-				const float dG_ddelx = -G * FilterInvSquare * d.x;
-				const float dG_ddely = -G * FilterInvSquare * d.y;
-				atomicAdd(&dL_dmean2D[global_id].x, dL_dG * dG_ddelx); // not scaled
-				atomicAdd(&dL_dmean2D[global_id].y, dL_dG * dG_ddely); // not scaled
-				atomicAdd(&dL_dtransMat[global_id * 9 + 8],  dL_dz); // propagate depth loss
+					// Update gradients w.r.t. 3D covariance (3x3 matrix)
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 0, gradients.values[Gradients::Transform + 0], dL_dTu.x, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 1, gradients.values[Gradients::Transform + 1], dL_dTu.y, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 2, gradients.values[Gradients::Transform + 2], dL_dTu.z, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 3, gradients.values[Gradients::Transform + 3], dL_dTv.x, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 4, gradients.values[Gradients::Transform + 4], dL_dTv.y, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 5, gradients.values[Gradients::Transform + 5], dL_dTv.z, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 6, gradients.values[Gradients::Transform + 6], dL_dTw.x, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 7, gradients.values[Gradients::Transform + 7], dL_dTw.y, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 8, gradients.values[Gradients::Transform + 8], dL_dTw.z, aggregate);
+				} else {
+					// // Update gradients w.r.t. center of Gaussian 2D mean position
+					const float dG_ddelx = -G * FilterInvSquare * d.x;
+					const float dG_ddely = -G * FilterInvSquare * d.y;
+					record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].x, gradients.values[Gradients::Mean + 0], dL_dG * dG_ddelx, aggregate);
+					record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].y, gradients.values[Gradients::Mean + 1], dL_dG * dG_ddely, aggregate);
+					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 8, gradients.values[Gradients::Transform + 8], dL_dz, aggregate);
+				}
+
+				// Update gradients w.r.t. opacity of the Gaussian
+				record_pixel_gradient<Reduction>(dL_dopacity + global_id,
+					gradients.values[Gradients::Opacity], G * dL_dalpha, aggregate);
+				// d_image[pix_id] += G * dL_dalpha;
 			}
-
-			// Update gradients w.r.t. opacity of the Gaussian
-			atomicAdd(&(dL_dopacity[global_id]), G * dL_dalpha);
-			// d_image[pix_id] += G * dL_dalpha;
+			if constexpr (Reduction)
+			{
+				if (aggregate)
+					gradients.flush(collected_id[j], lane, dL_dcolors, dL_dcolors2,
+						dL_dweights_for_frequency_angle, dL_dfrequency_lengths,
+						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity);
+			}
 		}
 	}
 }
@@ -872,39 +921,60 @@ void BACKWARD::render(
 	float* dL_dphases, 
 	float* dL_dcolors,
 	float* dL_dcolors2, 
-	float* d_image)
+	float* d_image,
+	bool backward_reduction,
+	int backward_reduction_threshold)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
-		ranges,
-		point_list,
-		W, H,
-		focal_x, focal_y,
-		bg_color,
-		means2D,
-		weights_for_frequency_angle, 
-		frequency_lengths, 
-		phases, 
-		F, 
-		normal_opacity,
-		transMats,
-		colors,
-		colors2,
-		depths,
-		final_Ts,
-		n_contrib,
-		dL_dpixels,
-		dL_depths,
-		dL_dtransMat,
-		dL_dmean2D,
-		dL_dnormal3D,
-		dL_dopacity,
-		dL_dweights_for_frequency_angle, 
-		dL_dfrequency_lengths, 
-		dL_dphases, 
-		dL_dcolors,
-		dL_dcolors2, 
-		d_image
-		);
+	auto launch = [&](auto frequencies, auto reduction)
+	{
+		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value> << <grid, block >> >(
+			ranges,
+			point_list,
+			W, H,
+			focal_x, focal_y,
+			bg_color,
+			means2D,
+			weights_for_frequency_angle,
+			frequency_lengths,
+			phases,
+			F,
+			normal_opacity,
+			transMats,
+			colors,
+			colors2,
+			depths,
+			final_Ts,
+			n_contrib,
+			dL_dpixels,
+			dL_depths,
+			dL_dtransMat,
+			dL_dmean2D,
+			dL_dnormal3D,
+			dL_dopacity,
+			dL_dweights_for_frequency_angle,
+			dL_dfrequency_lengths,
+			dL_dphases,
+			dL_dcolors,
+			dL_dcolors2,
+			d_image,
+			backward_reduction_threshold
+			);
+	};
+	if (!backward_reduction)
+	{
+		launch(std::integral_constant<int, 4>{}, std::false_type{});
+		return;
+	}
+	// Specialize all supported counts so gradient packages and shuffle accesses
+	// are compile-time indexed instead of spilling a dynamically indexed array.
+	switch (F)
+	{
+	case 1: launch(std::integral_constant<int, 1>{}, std::true_type{}); break;
+	case 2: launch(std::integral_constant<int, 2>{}, std::true_type{}); break;
+	case 3: launch(std::integral_constant<int, 3>{}, std::true_type{}); break;
+	case 4: launch(std::integral_constant<int, 4>{}, std::true_type{}); break;
+	default: throw std::invalid_argument("Butterfly backward requires 1 to 4 Gabor frequencies");
+	}
 }
 
 void BACKWARD::render_gaussian(

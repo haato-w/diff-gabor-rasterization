@@ -125,7 +125,9 @@ namespace CudaRasterizer
 			bool gaussian_backward = false,
 			const float* final_image = nullptr,
 			const float* final_aux = nullptr,
-			bool separate_sort = false);
+			bool separate_sort = false,
+			bool backward_reduction = false,
+			int backward_reduction_threshold = 16);
 	};
 };
 

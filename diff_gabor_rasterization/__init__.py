@@ -110,6 +110,8 @@ class _RasterizeGabors(torch.autograd.Function):
         ctx.raw_inputs = raw_inputs
         ctx.split_sh = split_sh
         ctx.fused = fused
+        ctx.backward_reduction = raster_settings.backward_reduction and not gaussian_backward
+        ctx.backward_reduction_threshold = raster_settings.backward_reduction_threshold
         ctx.save_for_backward(
             colors_precomp, colors_precomp2, means3D, weights_for_frequency_angle,
             frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii,
@@ -134,17 +136,20 @@ class _RasterizeGabors(torch.autograd.Function):
             geometry, ctx.num_rendered, binning, image, settings.debug,
         )
         native_backward = _C.rasterize_gabors_backward
-        if ctx.fused or settings.gaussian_backward or settings.separate_sort:
+        if ctx.fused or settings.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
             args += (sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs)
             native_backward = _C.rasterize_gabors_backward_fused
-        if settings.gaussian_backward or settings.separate_sort:
+        if settings.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
             checkpoints = (ctx.saved_tensors[17:] if settings.gaussian_backward
                            else (means3D.new_empty((0,)), means3D.new_empty((0,))))
             args += (settings.gaussian_backward, *checkpoints)
             native_backward = _C.rasterize_gabors_backward_gaussian
-        if settings.separate_sort:
+        if settings.separate_sort or ctx.backward_reduction:
             args += (settings.separate_sort,)
             native_backward = _C.rasterize_gabors_backward_separate_sorted
+        if ctx.backward_reduction:
+            args += (True, ctx.backward_reduction_threshold)
+            native_backward = _C.rasterize_gabors_backward_butterfly
         if settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
@@ -188,6 +193,8 @@ class GaborRasterizationSettings(NamedTuple):
     gaussian_backward: bool = False
     warp_culling: bool = False
     separate_sort: bool = False
+    backward_reduction: bool = False
+    backward_reduction_threshold: int = 16
 
 
 class GaborRasterizer(nn.Module):
@@ -223,10 +230,17 @@ class GaborRasterizer(nn.Module):
         conservative projected support misses that warp's pixel rectangle.
         ``separate_sort`` orders primitives by depth before duplication, then
         stably sorts duplicated entries using only their tile identifiers.
+        ``backward_reduction`` aggregates per-pixel gradients within each warp
+        before atomic additions; it is ignored for Gaussian-owned backward.
+        ``backward_reduction_threshold`` selects aggregation when at least this
+        many lanes contribute to the same primitive (0 to 32).
         """
         threshold = self.raster_settings.tile_culling_threshold
         if type(threshold) is not int or not 0 <= threshold <= 32:
             raise ValueError("tile_culling_threshold must be an integer between 0 and 32")
+        reduction_threshold = self.raster_settings.backward_reduction_threshold
+        if type(reduction_threshold) is not int or not 0 <= reduction_threshold <= 32:
+            raise ValueError("backward_reduction_threshold must be an integer between 0 and 32")
         if (shs is None) == (colors_precomp is None):
             raise ValueError("Please provide exactly one of either SHs or precomputed colors!")
         if (shs2 is None) == (colors_precomp2 is None):

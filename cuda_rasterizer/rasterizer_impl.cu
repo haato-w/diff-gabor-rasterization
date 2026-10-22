@@ -686,7 +686,9 @@ void CudaRasterizer::Rasterizer::backward(
 	bool gaussian_backward,
 	const float* final_image,
 	const float* final_aux,
-	bool separate_sort)
+	bool separate_sort,
+	bool backward_reduction,
+	int backward_reduction_threshold)
 {
 	Profiling::Scope allocate_timing("backward.allocate");
 	const int num_tiles = ((width + BLOCK_X - 1) / BLOCK_X) * ((height + BLOCK_Y - 1) / BLOCK_Y);
@@ -747,7 +749,7 @@ void CudaRasterizer::Rasterizer::backward(
 			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
 			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
 			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
-			d_image);
+			d_image, backward_reduction, backward_reduction_threshold);
 	}
 	CHECK_CUDA(, debug)
 	render_timing.stop();

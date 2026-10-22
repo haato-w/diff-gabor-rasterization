@@ -51,7 +51,9 @@ namespace BACKWARD
 		float* dL_dphases, 
 		float* dL_dcolors,
 		float* dL_dcolors2, 
-		float* d_image);
+		float* d_image,
+		bool backward_reduction = false,
+		int backward_reduction_threshold = 16);
 
 	// Ordinary arguments follow render's implementation order: color endpoints
 	// precede the projective transforms. The additional buffers are saved by
