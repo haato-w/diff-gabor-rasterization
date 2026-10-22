@@ -84,14 +84,13 @@ namespace CudaRasterizer
 	// indices so no extra parameter/gradient indirection is needed in backward.
 	struct DepthSortState
 	{
-		size_t selection_size;
-		size_t reduction_size;
 		size_t sorting_size;
 		uint32_t* visible_ids;
 		uint32_t* sorted_ids;
 		uint32_t* depth_keys;
 		uint32_t* depth_keys_unsorted;
 		uint32_t* ordered_tiles;
+		// Reset before preprocessing and accumulated there with warp atomics.
 		uint32_t* counts; // [primitive/tile instance count, visible primitive count]
 		char* workspace;
 

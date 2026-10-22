@@ -72,7 +72,10 @@ namespace FORWARD
 		bool load_balance,
 		int tile_culling_threshold,
 		bool warp_culling,
-		float4* pixel_bounds);
+		float4* pixel_bounds,
+		uint32_t* visible_ids,
+		uint32_t* visible_depth_keys,
+		uint32_t* visibility_counts);
 
 	// Main rasterization method.
 	void render(

@@ -402,7 +402,38 @@ __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	tiles_touched[idx] = (rect_max.y - rect_min.y) * (rect_max.x - rect_min.x);
 }
 
-template<int C, bool TileCulling, bool LoadBalance>
+// Faster-GS collects visible IDs/depth keys and the instance total during
+// preprocessing. Reserve one contiguous segment per nonempty warp instead of
+// issuing two atomics per primitive. All lanes, including culled/out-of-range
+// lanes, must participate after the tile-counting collectives have finished.
+__device__ __forceinline__ void collect_visible_primitives(
+	const uint32_t primitive, const uint32_t tile_count, const float depth,
+	uint32_t* visible_ids, uint32_t* depth_keys, uint32_t* counts)
+{
+	constexpr uint32_t mask = 0xffffffffu;
+	const uint32_t lane = threadIdx.x & 31;
+	const uint32_t visible = __ballot_sync(mask, tile_count > 0);
+	if (visible == 0) return;
+	uint32_t warp_tiles = tile_count;
+#pragma unroll
+	for (int offset = 16; offset > 0; offset >>= 1)
+		warp_tiles += __shfl_down_sync(mask, warp_tiles, offset);
+	uint32_t base = 0;
+	if (lane == 0)
+	{
+		base = atomicAdd(counts + 1, __popc(visible));
+		atomicAdd(counts, warp_tiles);
+	}
+	base = __shfl_sync(mask, base, 0);
+	if (tile_count > 0)
+	{
+		const uint32_t rank = __popc(visible & ((1u << lane) - 1u));
+		visible_ids[base + rank] = primitive;
+		depth_keys[base + rank] = __float_as_uint(depth);
+	}
+}
+
+template<int C, bool TileCulling, bool LoadBalance, bool CollectVisibility>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
 	const float* weights_for_frequency_angle,
@@ -450,7 +481,10 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	bool /*load_balance*/,
 	int tile_culling_threshold,
 	bool warp_culling,
-	float4* pixel_bounds)
+	float4* pixel_bounds,
+	uint32_t* visible_ids,
+	uint32_t* visible_depth_keys,
+	uint32_t* visibility_counts)
 {
 	preprocessPrimitive<C>(
 		P, D, M, orig_points, weights_for_frequency_angle, frequency_lengths,
@@ -473,6 +507,15 @@ __global__ void preprocessCUDA(int P, int D, int M,
 		const uint32_t count = enumerate_tiles<false>(idx, bounds, support, 0.0f,
 			0, grid.x, active, true, LoadBalance, tile_culling_threshold);
 		if (idx < P) tiles_touched[idx] = count;
+	}
+	if (CollectVisibility)
+	{
+		const uint32_t idx = cg::this_grid().thread_rank();
+		const uint32_t count = idx < P ? tiles_touched[idx] : 0;
+		// A positive radius is insufficient: exact culling may retain zero tiles.
+		const float depth = count > 0 ? depths[idx] : 0.0f;
+		collect_visible_primitives(idx, count, depth, visible_ids,
+			visible_depth_keys, visibility_counts);
 	}
 }
 
@@ -909,11 +952,15 @@ void FORWARD::preprocess(int P, int D, int M,
 	bool load_balance,
 	int tile_culling_threshold,
 	bool warp_culling,
-	float4* pixel_bounds)
+	float4* pixel_bounds,
+	uint32_t* visible_ids,
+	uint32_t* visible_depth_keys,
+	uint32_t* visibility_counts)
 {
-	auto launch = [&](auto culling_mode, auto balance_mode)
+	auto launch = [&](auto culling_mode, auto balance_mode, auto compact_mode)
 	{
-		preprocessCUDA<NUM_CHANNELS, decltype(culling_mode)::value, decltype(balance_mode)::value> << <(P + 255) / 256, 256 >> > (
+		preprocessCUDA<NUM_CHANNELS, decltype(culling_mode)::value,
+			decltype(balance_mode)::value, decltype(compact_mode)::value> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		weights_for_frequency_angle, 
@@ -961,17 +1008,25 @@ void FORWARD::preprocess(int P, int D, int M,
 		load_balance,
 		tile_culling_threshold,
 		warp_culling,
-		pixel_bounds
+		pixel_bounds,
+		visible_ids,
+		visible_depth_keys,
+		visibility_counts
 		);
+	};
+	auto launch_culling = [&](auto culling_mode, auto balance_mode)
+	{
+		if (visibility_counts) launch(culling_mode, balance_mode, std::true_type{});
+		else launch(culling_mode, balance_mode, std::false_type{});
 	};
 	if (tile_culling)
 	{
-		if (load_balance) launch(std::true_type{}, std::true_type{});
-		else launch(std::true_type{}, std::false_type{});
+		if (load_balance) launch_culling(std::true_type{}, std::true_type{});
+		else launch_culling(std::true_type{}, std::false_type{});
 	}
 	else
 	{
-		if (load_balance) launch(std::false_type{}, std::true_type{});
-		else launch(std::false_type{}, std::false_type{});
+		if (load_balance) launch_culling(std::false_type{}, std::true_type{});
+		else launch_culling(std::false_type{}, std::false_type{});
 	}
 }

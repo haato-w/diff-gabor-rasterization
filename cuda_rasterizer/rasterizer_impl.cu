@@ -34,12 +34,6 @@ namespace cg = cooperative_groups;
 #include "backward.h"
 #include "profiling.h"
 
-struct HasTouchedTile
-{
-	__host__ __device__ bool operator()(uint32_t count) const { return count != 0; }
-};
-using VisibleFlags = cub::TransformInputIterator<bool, HasTouchedTile, const uint32_t*>;
-
 // Helper function to find the next-highest bit of the MSB
 // on the CPU.
 uint32_t getHigherMsb(uint32_t n)
@@ -131,13 +125,6 @@ __global__ void identifyTileRanges(int L, const KeyT* point_list_keys, uint2* ra
 	}
 	if (idx == L - 1)
 		ranges[currtile].y = L;
-}
-
-__global__ void gatherDepthKeys(int count, const uint32_t* ids,
-	const float* depths, uint32_t* keys)
-{
-	const unsigned int rank = blockIdx.x * blockDim.x + threadIdx.x;
-	if (rank < count) keys[rank] = __float_as_uint(depths[ids[rank]]);
 }
 
 __global__ void gatherOrderedTileCounts(int count, const uint32_t* ids,
@@ -282,15 +269,10 @@ CudaRasterizer::DepthSortState CudaRasterizer::DepthSortState::fromChunk(char*& 
 	obtain(chunk, state.depth_keys_unsorted, P, 128);
 	obtain(chunk, state.ordered_tiles, P, 128);
 	obtain(chunk, state.counts, 2, 128);
-	cub::DeviceSelect::Flagged(nullptr, state.selection_size,
-		cub::CountingInputIterator<uint32_t>(0), VisibleFlags(state.ordered_tiles, HasTouchedTile{}),
-		state.visible_ids, state.counts + 1, P);
-	cub::DeviceReduce::Sum(nullptr, state.reduction_size, state.ordered_tiles, state.counts, P);
 	cub::DoubleBuffer<uint32_t> depth_keys(state.depth_keys_unsorted, state.depth_keys);
 	cub::DoubleBuffer<uint32_t> ids(state.visible_ids, state.sorted_ids);
 	cub::DeviceRadixSort::SortPairs(nullptr, state.sorting_size, depth_keys, ids, P);
-	const size_t workspace_size = std::max(state.selection_size, std::max(state.reduction_size, state.sorting_size));
-	obtain(chunk, state.workspace, workspace_size, 128);
+	obtain(chunk, state.workspace, state.sorting_size, 128);
 	return state;
 }
 
@@ -392,6 +374,8 @@ int CudaRasterizer::Rasterizer::forward(
 
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	Profiling::Scope preprocess_timing("forward.preprocess");
+	if (separate_sort)
+		CHECK_CUDA(cudaMemset(depthState.counts, 0, 2 * sizeof(uint32_t)), debug)
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
@@ -439,24 +423,14 @@ int CudaRasterizer::Rasterizer::forward(
 		load_balance,
 		tile_culling_threshold,
 		warp_culling,
-		pixel_bounds
+		pixel_bounds,
+		depthState.visible_ids,
+		depthState.depth_keys_unsorted,
+		depthState.counts
 	), debug)
 	preprocess_timing.stop();
 
-	if (separate_sort)
-	{
-		// Stable selection preserves primitive-index order for equal depths.
-		// Atomic visibility compaction would make these ties nondeterministic.
-		Profiling::Scope selection_timing("forward.visible_compaction");
-		CHECK_CUDA(cub::DeviceSelect::Flagged(depthState.workspace, depthState.selection_size,
-			cub::CountingInputIterator<uint32_t>(0), VisibleFlags(geomState.tiles_touched, HasTouchedTile{}),
-			depthState.visible_ids, depthState.counts + 1, P), debug)
-		selection_timing.stop();
-		Profiling::Scope reduction_timing("forward.count_reduce");
-		CHECK_CUDA(cub::DeviceReduce::Sum(depthState.workspace, depthState.reduction_size,
-			geomState.tiles_touched, depthState.counts, P), debug)
-	}
-	else
+	if (!separate_sort)
 	{
 		Profiling::Scope scan_timing("forward.scan");
 		CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size,
@@ -486,8 +460,6 @@ int CudaRasterizer::Rasterizer::forward(
 	if (separate_sort && num_visible > 0)
 	{
 		Profiling::Scope depth_timing("forward.depth_sort");
-		gatherDepthKeys<<<(num_visible + 255) / 256, 256>>>(num_visible,
-			depthState.visible_ids, geomState.depths, depthState.depth_keys_unsorted);
 		cub::DoubleBuffer<uint32_t> depth_keys(depthState.depth_keys_unsorted, depthState.depth_keys);
 		cub::DoubleBuffer<uint32_t> ids(depthState.visible_ids, depthState.sorted_ids);
 		CHECK_CUDA(cub::DeviceRadixSort::SortPairs(depthState.workspace, depthState.sorting_size,
