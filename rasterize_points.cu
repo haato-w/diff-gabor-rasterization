@@ -157,7 +157,8 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 	const int tile_culling_threshold,
 	const bool gaussian_backward = false,
 	const bool warp_culling = false,
-	const bool separate_sort = false)
+	const bool separate_sort = false,
+	const torch::Tensor& specular_precomp = torch::Tensor())
 {
   TORCH_CHECK(F >= 1 && F <= 4, "F must be between 1 and 4");
   TORCH_CHECK(tile_culling_threshold >= 0 && tile_culling_threshold <= 32,
@@ -171,6 +172,11 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
   const int P = means3D.size(0);
   const int H = image_height;
   const int W = image_width;
+  const bool has_specular = specular_precomp.defined() && specular_precomp.numel() != 0;
+  if (has_specular) {
+    checkTensor(specular_precomp, means3D, "specular_precomp");
+    checkShape(specular_precomp, P, NUM_CHANNELS, "specular_precomp");
+  }
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
@@ -278,7 +284,8 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 		debug,
 		split_sh ? sh_rest.data_ptr<float>() : nullptr,
 		split_sh ? sh2_rest.data_ptr<float>() : nullptr,
-		split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort);
+		split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort,
+		has_specular ? specular_precomp.data_ptr<float>() : nullptr);
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
 }
@@ -321,7 +328,9 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	const torch::Tensor& final_aux = torch::Tensor(),
 	const bool separate_sort = false,
 	const bool backward_reduction = false,
-	const int backward_reduction_threshold = 16)
+	const int backward_reduction_threshold = 16,
+	const torch::Tensor& specular_precomp = torch::Tensor(),
+	torch::Tensor* grad_specular = nullptr)
 {
 
   CHECK_INPUT(background);
@@ -362,6 +371,11 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
   const int P = means3D.size(0);
   const int H = dL_dout_color.size(1);
   const int W = dL_dout_color.size(2);
+  const bool has_specular = specular_precomp.defined() && specular_precomp.numel() != 0;
+  if (has_specular) {
+    checkTensor(specular_precomp, means3D, "specular_precomp");
+    checkShape(specular_precomp, P, NUM_CHANNELS, "specular_precomp");
+  }
 
   if (gaussian_backward) {
     checkTensor(final_image, means3D, "final_image", false);
@@ -412,6 +426,9 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
   torch::Tensor dL_dmeans2D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS}, means3D.options());
   torch::Tensor dL_dcolors2 = torch::zeros({P, NUM_CHANNELS}, means3D.options());
+  torch::Tensor dL_dspecular;
+  if (specular_precomp.defined()) dL_dspecular = torch::zeros_like(specular_precomp);
+  if (grad_specular) *grad_specular = dL_dspecular;
   torch::Tensor dL_dnormal = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_dweights_for_frequency_angle = torch::zeros({P, F}, means3D.options());
@@ -482,7 +499,9 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	  gaussian_backward,
 	  gaussian_backward ? final_image.contiguous().data_ptr<float>() : nullptr,
 	  gaussian_backward ? final_aux.contiguous().data_ptr<float>() : nullptr,
-	  separate_sort, backward_reduction, backward_reduction_threshold);
+	  separate_sort, backward_reduction, backward_reduction_threshold,
+	  has_specular ? specular_precomp.data_ptr<float>() : nullptr,
+	  has_specular ? dL_dspecular.data_ptr<float>() : nullptr);
   }
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image, dL_dsh_rest, dL_dsh2_rest);
@@ -943,6 +962,96 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardButterflyCUDA(
 	const int backward_reduction_threshold) {
   return RasterizeGaborsBackwardCUDAImpl(
     background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold);
+}
+
+RasterizeResult RasterizeGaborsSpecularCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const bool prefiltered,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs,
+	const bool tight_bbox,
+	const bool tile_culling,
+	const bool load_balance,
+	const int tile_culling_threshold,
+	const bool gaussian_backward,
+	const bool warp_culling,
+	const bool separate_sort,
+	const torch::Tensor& specular_precomp)
+{
+  return RasterizeGaborsCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort, specular_precomp);
+}
+
+RasterizeSpecularBackwardResult RasterizeGaborsBackwardSpecularCUDA(
+	const torch::Tensor& background,
+	const torch::Tensor& means3D,
+	const torch::Tensor& weights_for_frequency_angle,
+	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& phases,
+	const int F,
+	const torch::Tensor& radii,
+	const torch::Tensor& colors,
+	const torch::Tensor& colors2,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const float scale_modifier,
+	const torch::Tensor& transMat_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const torch::Tensor& dL_dout_color,
+	const torch::Tensor& dL_dout_others,
+	const torch::Tensor& sh,
+	const torch::Tensor& sh2,
+	const int degree,
+	const torch::Tensor& campos,
+	const torch::Tensor& geomBuffer,
+	const int R,
+	const torch::Tensor& binningBuffer,
+	const torch::Tensor& imageBuffer,
+	const bool debug,
+	const torch::Tensor& sh_rest,
+	const torch::Tensor& sh2_rest,
+	const bool split_sh,
+	const bool raw_inputs,
+	const bool gaussian_backward,
+	const torch::Tensor& final_image,
+	const torch::Tensor& final_aux,
+	const bool separate_sort,
+	const bool backward_reduction,
+	const int backward_reduction_threshold,
+	const torch::Tensor& specular_precomp)
+{
+  torch::Tensor grad_specular;
+  auto result = RasterizeGaborsBackwardCUDAImpl(
+    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold, specular_precomp, &grad_specular);
+  return std::tuple_cat(result, std::make_tuple(grad_specular));
 }
 
 torch::Tensor markVisible(

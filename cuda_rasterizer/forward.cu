@@ -522,7 +522,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS, bool GaussianBackward, bool WarpCulling>
+template <uint32_t CHANNELS, bool GaussianBackward, bool WarpCulling, bool HasSpecular>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -550,7 +550,8 @@ renderCUDA(
 	float4* __restrict__ bucket_color_T,
 	float4* __restrict__ bucket_depth_normal,
 	float2* __restrict__ bucket_moments,
-	const float4* __restrict__ pixel_bounds)
+	const float4* __restrict__ pixel_bounds,
+	const float* __restrict__ specular)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -782,6 +783,8 @@ renderCUDA(
 			for (int ch = 0; ch < CHANNELS; ch++) {
 				C[ch] += features[collected_id[j] * CHANNELS + ch] * w * harmonic1;
 				C[ch] += features2[collected_id[j] * CHANNELS + ch] * w * harmonic2;
+				if constexpr (HasSpecular)
+					C[ch] += specular[collected_id[j] * CHANNELS + ch] * w;
 				// C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
 			}
 			T = test_T;
@@ -861,11 +864,12 @@ void FORWARD::render(
 	float4* bucket_depth_normal,
 	float2* bucket_moments,
 	bool warp_culling,
-	const float4* pixel_bounds)
+	const float4* pixel_bounds,
+	const float* specular)
 {
-	auto launch = [&](auto gaussian_mode, auto warp_mode)
+	auto launch = [&](auto gaussian_mode, auto warp_mode, auto specular_mode)
 	{
-	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value, decltype(warp_mode)::value> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value, decltype(warp_mode)::value, decltype(specular_mode)::value> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
@@ -891,17 +895,22 @@ void FORWARD::render(
 		bucket_color_T,
 		bucket_depth_normal,
 		bucket_moments,
-		pixel_bounds);
+		pixel_bounds, specular);
+	};
+	auto launch_mode = [&](auto gaussian_mode, auto warp_mode)
+	{
+		if (specular) launch(gaussian_mode, warp_mode, std::true_type{});
+		else launch(gaussian_mode, warp_mode, std::false_type{});
 	};
 	if (gaussian_backward)
 	{
-		if (warp_culling) launch(std::true_type{}, std::true_type{});
-		else launch(std::true_type{}, std::false_type{});
+		if (warp_culling) launch_mode(std::true_type{}, std::true_type{});
+		else launch_mode(std::true_type{}, std::false_type{});
 	}
 	else
 	{
-		if (warp_culling) launch(std::false_type{}, std::true_type{});
-		else launch(std::false_type{}, std::false_type{});
+		if (warp_culling) launch_mode(std::false_type{}, std::true_type{});
+		else launch_mode(std::false_type{}, std::false_type{});
 	}
 }
 

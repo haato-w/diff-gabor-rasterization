@@ -146,7 +146,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C, bool Reduction = false, int Frequencies = 4>
+template <uint32_t C, bool Reduction = false, int Frequencies = 4, bool HasSpecular = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -178,13 +178,15 @@ renderCUDA(
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2, 
 	float* d_image,
-	int reduction_threshold)
+	int reduction_threshold,
+	const float* __restrict__ specular,
+	float* __restrict__ dL_dspecular)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const unsigned int lane = block.thread_rank() & 31;
 	const int n_frequencies = Reduction ? Frequencies : F;
-	using Gradients = PixelGradients<C, Frequencies>;
+	using Gradients = PixelGradients<C, Frequencies, HasSpecular>;
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
@@ -210,6 +212,7 @@ renderCUDA(
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
+	__shared__ float collected_specular[HasSpecular ? C * BLOCK_SIZE : 1];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -303,6 +306,8 @@ renderCUDA(
 			for (int i = 0; i < C; i++) {
 				collected_colors[i * BLOCK_SIZE + block.thread_rank()] = colors[coll_id * C + i];
 				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
+				if constexpr (HasSpecular)
+					collected_specular[i * BLOCK_SIZE + block.thread_rank()] = specular[coll_id * C + i];
 			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 			for (int i = 0; i < F; i++) {
@@ -415,7 +420,8 @@ renderCUDA(
 				{
 					const float c1 = collected_colors[ch * BLOCK_SIZE + j]; // この部分を変更
 					const float c2 = collected_colors2[ch * BLOCK_SIZE + j];
-					const float c = harmonic1 * c1 + harmonic2 * c2;
+					float c = harmonic1 * c1 + harmonic2 * c2;
+					if constexpr (HasSpecular) c += collected_specular[ch * BLOCK_SIZE + j];
 					// const float c = harmonic1 * c1;
 					// const float c = collected_colors[ch * BLOCK_SIZE + j];
 					// Update last color (to be used in the next iteration)
@@ -432,6 +438,9 @@ renderCUDA(
 						gradients.values[Gradients::Color1 + ch], dL_dchannel * dchannel_dcolor * harmonic1, aggregate);
 					record_pixel_gradient<Reduction>(dL_dcolors2 + global_id * C + ch,
 						gradients.values[Gradients::Color2 + ch], dL_dchannel * dchannel_dcolor * harmonic2, aggregate);
+					if constexpr (HasSpecular)
+						record_pixel_gradient<Reduction>(dL_dspecular + global_id * C + ch,
+							gradients.values[Gradients::Specular + ch], dL_dchannel * dchannel_dcolor, aggregate);
 					// atomicAdd(&(dL_dcolors[global_id * C + ch]), dchannel_dcolor * dL_dchannel);
 
 					// if (ch == 2) {
@@ -586,7 +595,7 @@ renderCUDA(
 				if (aggregate)
 					gradients.flush(collected_id[j], lane, dL_dcolors, dL_dcolors2,
 						dL_dweights_for_frequency_angle, dL_dfrequency_lengths,
-						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity);
+						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dspecular);
 			}
 		}
 	}
@@ -923,11 +932,13 @@ void BACKWARD::render(
 	float* dL_dcolors2, 
 	float* d_image,
 	bool backward_reduction,
-	int backward_reduction_threshold)
+	int backward_reduction_threshold,
+	const float* specular,
+	float* dL_dspecular)
 {
-	auto launch = [&](auto frequencies, auto reduction)
+	auto launch = [&](auto frequencies, auto reduction, auto specular_mode)
 	{
-		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value> << <grid, block >> >(
+		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value, decltype(specular_mode)::value> << <grid, block >> >(
 			ranges,
 			point_list,
 			W, H,
@@ -957,22 +968,27 @@ void BACKWARD::render(
 			dL_dcolors,
 			dL_dcolors2,
 			d_image,
-			backward_reduction_threshold
+			backward_reduction_threshold, specular, dL_dspecular
 			);
+	};
+	auto launch_mode = [&](auto frequencies, auto reduction)
+	{
+		if (specular) launch(frequencies, reduction, std::true_type{});
+		else launch(frequencies, reduction, std::false_type{});
 	};
 	if (!backward_reduction)
 	{
-		launch(std::integral_constant<int, 4>{}, std::false_type{});
+		launch_mode(std::integral_constant<int, 4>{}, std::false_type{});
 		return;
 	}
 	// Specialize all supported counts so gradient packages and shuffle accesses
 	// are compile-time indexed instead of spilling a dynamically indexed array.
 	switch (F)
 	{
-	case 1: launch(std::integral_constant<int, 1>{}, std::true_type{}); break;
-	case 2: launch(std::integral_constant<int, 2>{}, std::true_type{}); break;
-	case 3: launch(std::integral_constant<int, 3>{}, std::true_type{}); break;
-	case 4: launch(std::integral_constant<int, 4>{}, std::true_type{}); break;
+	case 1: launch_mode(std::integral_constant<int, 1>{}, std::true_type{}); break;
+	case 2: launch_mode(std::integral_constant<int, 2>{}, std::true_type{}); break;
+	case 3: launch_mode(std::integral_constant<int, 3>{}, std::true_type{}); break;
+	case 4: launch_mode(std::integral_constant<int, 4>{}, std::true_type{}); break;
 	default: throw std::invalid_argument("Butterfly backward requires 1 to 4 Gabor frequencies");
 	}
 }
@@ -1016,13 +1032,17 @@ void BACKWARD::render_gaussian(
 	const float4* bucket_depth_normal,
 	const float2* bucket_moments,
 	const float* final_image,
-	const float* final_aux)
+	const float* final_aux,
+	const float* specular,
+	float* dL_dspecular)
 {
 	if (bucket_capacity == 0 || num_tiles == 0)
 		return;
 	const dim3 gaussian_grid((bucket_capacity + GAUSSIAN_BACKWARD_WARPS - 1) / GAUSSIAN_BACKWARD_WARPS);
 	const dim3 gaussian_block(32 * GAUSSIAN_BACKWARD_WARPS);
-	const auto kernel = F == 4 ? renderGaussianCUDA<4> : renderGaussianCUDA<0>;
+	auto launch = [&](auto specular_mode)
+	{
+	const auto kernel = F == 4 ? renderGaussianCUDA<4, decltype(specular_mode)::value> : renderGaussianCUDA<0, decltype(specular_mode)::value>;
 	kernel<<<gaussian_grid, gaussian_block>>>(
 		ranges, point_list, W, H, bg_color, means2D,
 		weights_for_frequency_angle, frequency_lengths, phases, F,
@@ -1033,5 +1053,8 @@ void BACKWARD::render_gaussian(
 		dL_dcolors, dL_dcolors2,
 		bucket_capacity, num_tiles, bucket_offsets, bucket_to_tile,
 		tile_max_contrib, bucket_color_T, bucket_depth_normal, bucket_moments,
-		final_image, final_aux);
+		final_image, final_aux, specular, dL_dspecular);
+	};
+	if (specular) launch(std::true_type{});
+	else launch(std::false_type{});
 }

@@ -335,7 +335,8 @@ int CudaRasterizer::Rasterizer::forward(
 	int tile_culling_threshold,
 	bool gaussian_backward,
 	bool warp_culling,
-	bool separate_sort)
+	bool separate_sort,
+	const float* specular)
 {
 	const float focal_y = height / (2.0f * tan_fovy);
 	const float focal_x = width / (2.0f * tan_fovx);
@@ -626,7 +627,8 @@ int CudaRasterizer::Rasterizer::forward(
 		bucketState.depth_normal,
 		bucketState.moments,
 		warp_culling,
-		pixel_bounds), debug)
+		pixel_bounds,
+		specular), debug)
 	render_timing.stop();
 
 	return num_rendered;
@@ -688,7 +690,9 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* final_aux,
 	bool separate_sort,
 	bool backward_reduction,
-	int backward_reduction_threshold)
+	int backward_reduction_threshold,
+	const float* specular,
+	float* dL_dspecular)
 {
 	Profiling::Scope allocate_timing("backward.allocate");
 	const int num_tiles = ((width + BLOCK_X - 1) / BLOCK_X) * ((height + BLOCK_Y - 1) / BLOCK_Y);
@@ -735,7 +739,7 @@ void CudaRasterizer::Rasterizer::backward(
 			d_image, bucket_capacity, num_tiles, bucketState.offsets,
 			bucketState.to_tile, bucketState.tile_max_contrib,
 			bucketState.color_T, bucketState.depth_normal,
-			bucketState.moments, final_image, final_aux);
+			bucketState.moments, final_image, final_aux, specular, dL_dspecular);
 	}
 	else
 	{
@@ -749,7 +753,7 @@ void CudaRasterizer::Rasterizer::backward(
 			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
 			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
 			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
-			d_image, backward_reduction, backward_reduction_threshold);
+			d_image, backward_reduction, backward_reduction_threshold, specular, dL_dspecular);
 	}
 	CHECK_CUDA(, debug)
 	render_timing.stop();

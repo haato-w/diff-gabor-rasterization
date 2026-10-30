@@ -130,7 +130,7 @@ __forceinline__ __device__ GaussianBackwardPixel load_gaussian_pixel(
 	return state;
 }
 
-template <int FIXED_F>
+template <int FIXED_F, bool HasSpecular = false>
 __global__ void __launch_bounds__(32 * GAUSSIAN_BACKWARD_WARPS)
 renderGaussianCUDA(
 	const uint2* __restrict__ ranges,
@@ -167,7 +167,9 @@ renderGaussianCUDA(
 	const float4* __restrict__ bucket_depth_normal,
 	const float2* __restrict__ bucket_moments,
 	const float* __restrict__ final_image,
-	const float* __restrict__ final_aux)
+	const float* __restrict__ final_aux,
+	const float* __restrict__ specular,
+	float* __restrict__ dL_dspecular)
 {
 	constexpr int MAX_F = FIXED_F ? FIXED_F : 10;
 	const int n_frequencies = FIXED_F ? FIXED_F : F;
@@ -191,6 +193,7 @@ renderGaussianCUDA(
 	float4 normal_opa = {};
 	float3 Tu = {}, Tv = {}, Tw = {};
 	float color1[3] = {}, color2[3] = {};
+	float specular_color[3] = {};
 	float weights[MAX_F] = {}, lengths[MAX_F] = {}, frequency_phases[MAX_F] = {};
 	float angle_x[MAX_F], angle_y[MAX_F];
 	if (valid_primitive)
@@ -206,6 +209,7 @@ renderGaussianCUDA(
 		{
 			color1[ch] = colors[3 * primitive + ch];
 			color2[ch] = colors2[3 * primitive + ch];
+			if constexpr (HasSpecular) specular_color[ch] = specular[3 * primitive + ch];
 		}
 		#pragma unroll
 		for (int f = 0; f < n_frequencies; ++f)
@@ -227,6 +231,7 @@ renderGaussianCUDA(
 	}
 
 	float grad_color1[3] = {}, grad_color2[3] = {};
+	float grad_specular[3] = {};
 	float grad_weights[MAX_F] = {}, grad_lengths[MAX_F] = {}, grad_phases[MAX_F] = {};
 	float grad_T[9] = {};
 	float3 grad_normal = {};
@@ -302,7 +307,13 @@ renderGaussianCUDA(
 		#pragma unroll
 		for (int ch = 0; ch < 3; ++ch)
 		{
-			local_loss += (harmonic1 * color1[ch] + harmonic2 * color2[ch]) * pixel_gradient[ch];
+			float color = harmonic1 * color1[ch] + harmonic2 * color2[ch];
+			if constexpr (HasSpecular)
+			{
+				color += specular_color[ch];
+				grad_specular[ch] += pixel_gradient[ch] * weight;
+			}
+			local_loss += color * pixel_gradient[ch];
 			grad_color1[ch] += pixel_gradient[ch] * weight * harmonic1;
 			grad_color2[ch] += pixel_gradient[ch] * weight * harmonic2;
 		}
@@ -384,6 +395,8 @@ renderGaussianCUDA(
 		{
 			atomicAdd(dL_dcolors + primitive * 3 + ch, grad_color1[ch]);
 			atomicAdd(dL_dcolors2 + primitive * 3 + ch, grad_color2[ch]);
+			if constexpr (HasSpecular)
+				atomicAdd(dL_dspecular + primitive * 3 + ch, grad_specular[ch]);
 		}
 		#pragma unroll
 		for (int f = 0; f < n_frequencies; ++f)

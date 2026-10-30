@@ -107,7 +107,8 @@ namespace FORWARD
 		float4* bucket_depth_normal,
 		float2* bucket_moments,
 		bool warp_culling,
-		const float4* pixel_bounds);
+		const float4* pixel_bounds,
+		const float* specular);
 }
 
 

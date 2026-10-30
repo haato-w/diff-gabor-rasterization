@@ -53,7 +53,9 @@ namespace BACKWARD
 		float* dL_dcolors2, 
 		float* d_image,
 		bool backward_reduction = false,
-		int backward_reduction_threshold = 16);
+		int backward_reduction_threshold = 16,
+		const float* specular = nullptr,
+		float* dL_dspecular = nullptr);
 
 	// Ordinary arguments follow render's implementation order: color endpoints
 	// precede the projective transforms. The additional buffers are saved by
@@ -97,7 +99,9 @@ namespace BACKWARD
 		const float4* bucket_depth_normal,
 		const float2* bucket_moments,
 		const float* final_image,
-		const float* final_aux);
+		const float* final_aux,
+		const float* specular = nullptr,
+		float* dL_dspecular = nullptr);
 
 	void preprocess(
 		int P, int D, int M,
