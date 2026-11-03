@@ -37,13 +37,14 @@ __device__ __forceinline__ void butterfly_atomic_add(
 
 // Compile-time sizes keep all gradient components in registers. These buffers
 // are per-thread values, not the global checkpoints used by Gaussian backward.
-template <int Channels, int Frequencies, bool HasSpecular = false>
+template <int Channels, int Frequencies, bool HasSpecular = false, bool HasAttributes = false>
 struct PixelGradients
 {
     static constexpr int Color1 = 0;
     static constexpr int Color2 = Color1 + Channels;
     static constexpr int Specular = Color2 + Channels;
-    static constexpr int Weights = Specular + (HasSpecular ? Channels : 0);
+    static constexpr int Attributes = Specular + (HasSpecular ? Channels : 0);
+    static constexpr int Weights = Attributes + (HasAttributes ? 6 : 0);
     static constexpr int Lengths = Weights + Frequencies;
     static constexpr int Phases = Lengths + Frequencies;
     static constexpr int Transform = Phases + Frequencies;
@@ -56,12 +57,14 @@ struct PixelGradients
         const unsigned int primitive, const unsigned int lane,
         float* color1, float* color2, float* weights, float* lengths,
         float* phases, float* transform, float3* mean, float* normal,
-        float* opacity, float* specular) const
+        float* opacity, float* specular, float* attributes) const
     {
         butterfly_atomic_add<Channels>(color1 + primitive * Channels, values + Color1, lane);
         butterfly_atomic_add<Channels>(color2 + primitive * Channels, values + Color2, lane);
         if constexpr (HasSpecular)
             butterfly_atomic_add<Channels>(specular + primitive * Channels, values + Specular, lane);
+        if constexpr (HasAttributes)
+            butterfly_atomic_add<6>(attributes + primitive * 6, values + Attributes, lane);
         butterfly_atomic_add<Frequencies>(weights + primitive * Frequencies, values + Weights, lane);
         butterfly_atomic_add<Frequencies>(lengths + primitive * Frequencies, values + Lengths, lane);
         butterfly_atomic_add<Frequencies>(phases + primitive * Frequencies, values + Phases, lane);

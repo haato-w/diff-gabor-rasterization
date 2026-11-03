@@ -36,6 +36,7 @@ def rasterize_gabors(
     weights_for_frequency_angle, frequency_lengths, phases, F, scales,
     rotations, cov3Ds_precomp, raster_settings, sh_rest=None, sh2_rest=None,
     raw_inputs=False, split_sh=False, specular_precomp=None,
+    attributes_precomp=None,
 ):
     if sh_rest is None:
         sh_rest = means3D.new_empty((0,))
@@ -43,11 +44,25 @@ def rasterize_gabors(
         sh2_rest = means3D.new_empty((0,))
     if specular_precomp is None:
         specular_precomp = means3D.new_empty((0,))
+    if attributes_precomp is None:
+        attributes_precomp = means3D.new_empty((0,))
+    has_attributes = attributes_precomp.numel() != 0 or (
+        means3D.shape[0] == 0 and attributes_precomp.shape == (0, 6)
+    )
+    if has_attributes:
+        if attributes_precomp.shape != (means3D.shape[0], 6):
+            raise ValueError("attributes_precomp must have shape [N, 6]")
+        if attributes_precomp.dtype != torch.float32:
+            raise RuntimeError("attributes_precomp must use float32")
+        if not attributes_precomp.is_cuda or attributes_precomp.device != means3D.device:
+            raise RuntimeError("attributes_precomp must be a CUDA tensor on the same device as means3D")
+        if not attributes_precomp.is_contiguous():
+            raise RuntimeError("attributes_precomp must be contiguous")
     return _RasterizeGabors.apply(
         means3D, means2D, sh, sh2, colors_precomp, colors_precomp2, opacities,
         weights_for_frequency_angle, frequency_lengths, phases, F, scales,
         rotations, cov3Ds_precomp, raster_settings, sh_rest, sh2_rest,
-        bool(raw_inputs), bool(split_sh), specular_precomp,
+        bool(raw_inputs), bool(split_sh), specular_precomp, attributes_precomp,
     )
 
 
@@ -57,7 +72,7 @@ class _RasterizeGabors(torch.autograd.Function):
         ctx, means3D, means2D, sh, sh2, colors_precomp, colors_precomp2,
         opacities, weights_for_frequency_angle, frequency_lengths, phases, F,
         scales, rotations, cov3Ds_precomp, raster_settings, sh_rest, sh2_rest,
-        raw_inputs, split_sh, specular_precomp,
+        raw_inputs, split_sh, specular_precomp, attributes_precomp,
     ):
         args = (
             raster_settings.bg, means3D, weights_for_frequency_angle,
@@ -72,7 +87,12 @@ class _RasterizeGabors(torch.autograd.Function):
         fused = split_sh or raw_inputs
         native_forward = _C.rasterize_gabors
         culled = raster_settings.tile_culling or raster_settings.load_balance
-        gaussian_backward = raster_settings.gaussian_backward
+        has_attributes = attributes_precomp.numel() != 0 or (
+            means3D.shape[0] == 0 and attributes_precomp.shape == (0, 6)
+        )
+        # Extra attributes use pixel/warp backward rather than allocating
+        # six more channels of Gaussian-owned compositing checkpoints.
+        gaussian_backward = raster_settings.gaussian_backward and not has_attributes
         warp_culling = raster_settings.warp_culling
         separate_sort = raster_settings.separate_sort
         if fused or raster_settings.tight_bbox or culled or gaussian_backward or warp_culling or separate_sort:
@@ -95,7 +115,7 @@ class _RasterizeGabors(torch.autograd.Function):
             args += (separate_sort,)
             native_forward = _C.rasterize_gabors_separate_sorted
         has_specular = specular_precomp.numel() != 0
-        if has_specular:
+        if has_specular or has_attributes:
             # The shaded export accepts every optimization flag; existing
             # exports and positional argument layouts remain unchanged.
             args = args[:25] + (
@@ -105,6 +125,9 @@ class _RasterizeGabors(torch.autograd.Function):
                 gaussian_backward, warp_culling, separate_sort, specular_precomp,
             )
             native_forward = _C.rasterize_gabors_specular
+            if has_attributes:
+                args += (attributes_precomp,)
+                native_forward = _C.rasterize_gabors_attributes
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
@@ -125,6 +148,8 @@ class _RasterizeGabors(torch.autograd.Function):
         ctx.split_sh = split_sh
         ctx.fused = fused
         ctx.has_specular = has_specular
+        ctx.has_attributes = has_attributes
+        ctx.gaussian_backward = gaussian_backward
         ctx.backward_reduction = raster_settings.backward_reduction and not gaussian_backward
         ctx.backward_reduction_threshold = raster_settings.backward_reduction_threshold
         ctx.save_for_backward(
@@ -132,6 +157,7 @@ class _RasterizeGabors(torch.autograd.Function):
             frequency_lengths, phases, scales, rotations, cov3Ds_precomp, radii,
             sh, sh2, geomBuffer, binningBuffer, imgBuffer, sh_rest, sh2_rest, specular_precomp,
             *((color, depth) if gaussian_backward else ()),
+            attributes_precomp,
         )
         return color, radii, depth
 
@@ -142,6 +168,7 @@ class _RasterizeGabors(torch.autograd.Function):
          covariance, radii, sh, sh2, geometry, binning, image,
          sh_rest, sh2_rest) = ctx.saved_tensors[:17]
         specular = ctx.saved_tensors[17]
+        attributes = ctx.saved_tensors[-1]
         # Autograd may provide expanded or strided image gradients.
         args = (
             settings.bg, means3D, weights, lengths, phases, ctx.F, radii,
@@ -152,13 +179,13 @@ class _RasterizeGabors(torch.autograd.Function):
             geometry, ctx.num_rendered, binning, image, settings.debug,
         )
         native_backward = _C.rasterize_gabors_backward
-        if ctx.fused or settings.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
+        if ctx.fused or ctx.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
             args += (sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs)
             native_backward = _C.rasterize_gabors_backward_fused
-        if settings.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
-            checkpoints = (ctx.saved_tensors[18:] if settings.gaussian_backward
+        if ctx.gaussian_backward or settings.separate_sort or ctx.backward_reduction:
+            checkpoints = (ctx.saved_tensors[18:20] if ctx.gaussian_backward
                            else (means3D.new_empty((0,)), means3D.new_empty((0,))))
-            args += (settings.gaussian_backward, *checkpoints)
+            args += (ctx.gaussian_backward, *checkpoints)
             native_backward = _C.rasterize_gabors_backward_gaussian
         if settings.separate_sort or ctx.backward_reduction:
             args += (settings.separate_sort,)
@@ -166,15 +193,18 @@ class _RasterizeGabors(torch.autograd.Function):
         if ctx.backward_reduction:
             args += (True, ctx.backward_reduction_threshold)
             native_backward = _C.rasterize_gabors_backward_butterfly
-        if ctx.has_specular:
-            checkpoints = (ctx.saved_tensors[18:] if settings.gaussian_backward
+        if ctx.has_specular or ctx.has_attributes:
+            checkpoints = (ctx.saved_tensors[18:20] if ctx.gaussian_backward
                            else (means3D.new_empty((0,)), means3D.new_empty((0,))))
             args = args[:28] + (
                 sh_rest, sh2_rest, ctx.split_sh, ctx.raw_inputs,
-                settings.gaussian_backward, *checkpoints, settings.separate_sort,
+                ctx.gaussian_backward, *checkpoints, settings.separate_sort,
                 ctx.backward_reduction, ctx.backward_reduction_threshold, specular,
             )
             native_backward = _C.rasterize_gabors_backward_specular
+            if ctx.has_attributes:
+                args += (attributes,)
+                native_backward = _C.rasterize_gabors_backward_attributes
         if settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
@@ -190,12 +220,13 @@ class _RasterizeGabors(torch.autograd.Function):
          grad_lengths, grad_phases, grad_means3D, grad_covariance,
          grad_sh, grad_sh2, grad_scales, grad_rotations, _) = result[:14]
         grad_sh_rest, grad_sh2_rest = result[14:16] if ctx.split_sh else (None, None)
-        grad_specular = result[16] if ctx.has_specular else torch.zeros_like(specular)
+        grad_specular = result[16] if ctx.has_specular or ctx.has_attributes else torch.zeros_like(specular)
+        grad_attributes = result[17] if ctx.has_attributes else torch.zeros_like(attributes)
         return (
             grad_means3D, grad_means2D, grad_sh, grad_sh2, grad_colors, grad_colors2,
             grad_opacities, grad_weights, grad_lengths, grad_phases, None,
             grad_scales, grad_rotations, grad_covariance, None,
-            grad_sh_rest, grad_sh2_rest, None, None, grad_specular,
+            grad_sh_rest, grad_sh2_rest, None, None, grad_specular, grad_attributes,
         )
 
 
@@ -238,6 +269,7 @@ class GaborRasterizer(nn.Module):
         frequency_lengths, phases, F, shs=None, shs2=None, colors_precomp=None,
         colors_precomp2=None, scales=None, rotations=None, cov3D_precomp=None,
         shs_rest=None, shs2_rest=None, raw_inputs=False, specular_precomp=None,
+        attributes_precomp=None,
     ):
         """Rasterize packed SH or separate DC/rest tensors.
 
@@ -262,6 +294,11 @@ class GaborRasterizer(nn.Module):
         many lanes contribute to the same primitive (0 to 32).
         ``specular_precomp`` optionally adds RGB [P, 3] independently of the
         signed Gabor mixture, before alpha compositing.
+        ``attributes_precomp`` optionally composites six [P, 6] attributes
+        independently of the signed carrier into channels 7:13 of the returned
+        auxiliary map. RGB and its original seven auxiliary channels retain
+        their existing behavior. Attributes use pixel/warp backward even when
+        ``gaussian_backward`` is enabled, avoiding extra Gaussian checkpoints.
         """
         threshold = self.raster_settings.tile_culling_threshold
         if type(threshold) is not int or not 0 <= threshold <= 32:
@@ -303,5 +340,5 @@ class GaborRasterizer(nn.Module):
             weights_for_frequency_angle, frequency_lengths, phases, F,
             or_empty(scales), or_empty(rotations), or_empty(cov3D_precomp),
             self.raster_settings, or_empty(shs_rest), or_empty(shs2_rest),
-            raw_inputs, split_sh, specular_precomp,
+            raw_inputs, split_sh, specular_precomp, attributes_precomp,
         )

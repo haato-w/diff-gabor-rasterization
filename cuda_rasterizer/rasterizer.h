@@ -72,7 +72,8 @@ namespace CudaRasterizer
 			bool gaussian_backward = false,
 			bool warp_culling = false,
 			bool separate_sort = false,
-			const float* specular = nullptr);
+			const float* specular = nullptr,
+			const float* attributes = nullptr);
 
 		static void backward(
 			const int P, int D, int M, int R,
@@ -130,7 +131,9 @@ namespace CudaRasterizer
 			bool backward_reduction = false,
 			int backward_reduction_threshold = 16,
 			const float* specular = nullptr,
-			float* dL_dspecular = nullptr);
+			float* dL_dspecular = nullptr,
+			const float* attributes = nullptr,
+			float* dL_dattributes = nullptr);
 	};
 };
 

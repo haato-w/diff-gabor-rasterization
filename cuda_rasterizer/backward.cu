@@ -146,7 +146,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C, bool Reduction = false, int Frequencies = 4, bool HasSpecular = false>
+template <uint32_t C, bool Reduction = false, int Frequencies = 4, bool HasSpecular = false, bool HasAttributes = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -180,13 +180,15 @@ renderCUDA(
 	float* d_image,
 	int reduction_threshold,
 	const float* __restrict__ specular,
-	float* __restrict__ dL_dspecular)
+	float* __restrict__ dL_dspecular,
+	const float* __restrict__ attributes,
+	float* __restrict__ dL_dattributes)
 {
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const unsigned int lane = block.thread_rank() & 31;
 	const int n_frequencies = Reduction ? Frequencies : F;
-	using Gradients = PixelGradients<C, Frequencies, HasSpecular>;
+	using Gradients = PixelGradients<C, Frequencies, HasSpecular, HasAttributes>;
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
@@ -213,6 +215,7 @@ renderCUDA(
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
 	__shared__ float collected_specular[HasSpecular ? C * BLOCK_SIZE : 1];
+	__shared__ float collected_attributes[HasAttributes ? 6 * BLOCK_SIZE : 1];
 	__shared__ float3 collected_Tu[BLOCK_SIZE];
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
@@ -237,6 +240,15 @@ renderCUDA(
 	const int last_contributor = inside ? n_contrib[pix_id] : 0;
 
 	float accum_rec[C] = { 0 };
+	float accum_attributes[HasAttributes ? 6 : 1] = { 0 };
+	float last_attributes[HasAttributes ? 6 : 1] = { 0 };
+	float dL_dattributes_pixel[HasAttributes ? 6 : 1] = { 0 };
+	if constexpr (HasAttributes)
+	{
+#pragma unroll
+		for (int ch = 0; ch < 6; ++ch)
+			dL_dattributes_pixel[ch] = inside ? dL_depths[(7 + ch) * H * W + pix_id] : 0;
+	}
 	float dL_dpixel[C];
 
 #if RENDER_AXUTILITY
@@ -308,6 +320,12 @@ renderCUDA(
 				collected_colors2[i * BLOCK_SIZE + block.thread_rank()] = colors2[coll_id * C + i];
 				if constexpr (HasSpecular)
 					collected_specular[i * BLOCK_SIZE + block.thread_rank()] = specular[coll_id * C + i];
+			}
+			if constexpr (HasAttributes)
+			{
+#pragma unroll
+				for (int ch = 0; ch < 6; ++ch)
+					collected_attributes[ch * BLOCK_SIZE + block.thread_rank()] = attributes[coll_id * 6 + ch];
 			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
 			for (int i = 0; i < F; i++) {
@@ -446,6 +464,19 @@ renderCUDA(
 					// if (ch == 2) {
 					// 	d_image[pix_id] += dL_dchannel * dchannel_dcolor * harmonic1;
 					// }
+				}
+				if constexpr (HasAttributes)
+				{
+#pragma unroll
+					for (int ch = 0; ch < 6; ++ch)
+					{
+						const float value = collected_attributes[ch * BLOCK_SIZE + j];
+						accum_attributes[ch] = last_alpha * last_attributes[ch] + (1.f - last_alpha) * accum_attributes[ch];
+						last_attributes[ch] = value;
+						dL_dalpha += (value - accum_attributes[ch]) * dL_dattributes_pixel[ch];
+						record_pixel_gradient<Reduction>(dL_dattributes + global_id * 6 + ch,
+							gradients.values[Gradients::Attributes + ch], dL_dattributes_pixel[ch] * dchannel_dcolor, aggregate);
+					}
 				}
 				// weight and freqency-length gradient
 				const float r0 = collected_colors[0 * BLOCK_SIZE + j];
@@ -595,7 +626,7 @@ renderCUDA(
 				if (aggregate)
 					gradients.flush(collected_id[j], lane, dL_dcolors, dL_dcolors2,
 						dL_dweights_for_frequency_angle, dL_dfrequency_lengths,
-						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dspecular);
+						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dspecular, dL_dattributes);
 			}
 		}
 	}
@@ -934,11 +965,13 @@ void BACKWARD::render(
 	bool backward_reduction,
 	int backward_reduction_threshold,
 	const float* specular,
-	float* dL_dspecular)
+	float* dL_dspecular,
+	const float* attributes,
+	float* dL_dattributes)
 {
-	auto launch = [&](auto frequencies, auto reduction, auto specular_mode)
+	auto launch = [&](auto frequencies, auto reduction, auto specular_mode, auto attributes_mode)
 	{
-		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value, decltype(specular_mode)::value> << <grid, block >> >(
+		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value, decltype(specular_mode)::value, decltype(attributes_mode)::value> << <grid, block >> >(
 			ranges,
 			point_list,
 			W, H,
@@ -968,13 +1001,18 @@ void BACKWARD::render(
 			dL_dcolors,
 			dL_dcolors2,
 			d_image,
-			backward_reduction_threshold, specular, dL_dspecular
+			backward_reduction_threshold, specular, dL_dspecular, attributes, dL_dattributes
 			);
 	};
 	auto launch_mode = [&](auto frequencies, auto reduction)
 	{
-		if (specular) launch(frequencies, reduction, std::true_type{});
-		else launch(frequencies, reduction, std::false_type{});
+		auto launch_attributes = [&](auto specular_mode)
+		{
+			if (attributes) launch(frequencies, reduction, specular_mode, std::true_type{});
+			else launch(frequencies, reduction, specular_mode, std::false_type{});
+		};
+		if (specular) launch_attributes(std::true_type{});
+		else launch_attributes(std::false_type{});
 	};
 	if (!backward_reduction)
 	{

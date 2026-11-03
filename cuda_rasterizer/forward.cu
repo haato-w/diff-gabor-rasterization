@@ -522,7 +522,7 @@ __global__ void preprocessCUDA(int P, int D, int M,
 // Main rasterization method. Collaboratively works on one tile per
 // block, each thread treats one pixel. Alternates between fetching 
 // and rasterizing data.
-template <uint32_t CHANNELS, bool GaussianBackward, bool WarpCulling, bool HasSpecular>
+template <uint32_t CHANNELS, bool GaussianBackward, bool WarpCulling, bool HasSpecular, bool HasAttributes>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -551,7 +551,8 @@ renderCUDA(
 	float4* __restrict__ bucket_depth_normal,
 	float2* __restrict__ bucket_moments,
 	const float4* __restrict__ pixel_bounds,
-	const float* __restrict__ specular)
+	const float* __restrict__ specular,
+	const float* __restrict__ attributes)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -616,6 +617,7 @@ renderCUDA(
 	uint32_t contributor = 0;
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
+	float attributes_accum[HasAttributes ? 6 : 1] = { 0 };
 
 
 #if RENDER_AXUTILITY
@@ -787,6 +789,12 @@ renderCUDA(
 					C[ch] += specular[collected_id[j] * CHANNELS + ch] * w;
 				// C[ch] += features[collected_id[j] * CHANNELS + ch] * w;
 			}
+			if constexpr (HasAttributes)
+			{
+#pragma unroll
+				for (int ch = 0; ch < 6; ++ch)
+					attributes_accum[ch] += attributes[collected_id[j] * 6 + ch] * w;
+			}
 			T = test_T;
 
 			// Keep track of last range entry to update this
@@ -820,6 +828,12 @@ renderCUDA(
 		n_contrib[pix_id] = last_contributor;
 		for (int ch = 0; ch < CHANNELS; ch++)
 			out_color[ch * H * W + pix_id] = C[ch] + T * bg_color[ch];
+		if constexpr (HasAttributes)
+		{
+#pragma unroll
+			for (int ch = 0; ch < 6; ++ch)
+				out_others[(7 + ch) * H * W + pix_id] = attributes_accum[ch];
+		}
 
 #if RENDER_AXUTILITY
 		n_contrib[pix_id + H * W] = median_contributor;
@@ -865,11 +879,12 @@ void FORWARD::render(
 	float2* bucket_moments,
 	bool warp_culling,
 	const float4* pixel_bounds,
-	const float* specular)
+	const float* specular,
+	const float* attributes)
 {
-	auto launch = [&](auto gaussian_mode, auto warp_mode, auto specular_mode)
+	auto launch = [&](auto gaussian_mode, auto warp_mode, auto specular_mode, auto attributes_mode)
 	{
-	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value, decltype(warp_mode)::value, decltype(specular_mode)::value> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS, decltype(gaussian_mode)::value, decltype(warp_mode)::value, decltype(specular_mode)::value, decltype(attributes_mode)::value> << <grid, block >> > (
 		ranges,
 		point_list,
 		W, H,
@@ -895,12 +910,17 @@ void FORWARD::render(
 		bucket_color_T,
 		bucket_depth_normal,
 		bucket_moments,
-		pixel_bounds, specular);
+		pixel_bounds, specular, attributes);
 	};
 	auto launch_mode = [&](auto gaussian_mode, auto warp_mode)
 	{
-		if (specular) launch(gaussian_mode, warp_mode, std::true_type{});
-		else launch(gaussian_mode, warp_mode, std::false_type{});
+		auto launch_attributes = [&](auto specular_mode)
+		{
+			if (attributes) launch(gaussian_mode, warp_mode, specular_mode, std::true_type{});
+			else launch(gaussian_mode, warp_mode, specular_mode, std::false_type{});
+		};
+		if (specular) launch_attributes(std::true_type{});
+		else launch_attributes(std::false_type{});
 	};
 	if (gaussian_backward)
 	{

@@ -108,7 +108,8 @@ namespace FORWARD
 		float2* bucket_moments,
 		bool warp_culling,
 		const float4* pixel_bounds,
-		const float* specular);
+		const float* specular,
+		const float* attributes);
 }
 
 

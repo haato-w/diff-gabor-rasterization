@@ -55,7 +55,9 @@ namespace BACKWARD
 		bool backward_reduction = false,
 		int backward_reduction_threshold = 16,
 		const float* specular = nullptr,
-		float* dL_dspecular = nullptr);
+		float* dL_dspecular = nullptr,
+		const float* attributes = nullptr,
+		float* dL_dattributes = nullptr);
 
 	// Ordinary arguments follow render's implementation order: color endpoints
 	// precede the projective transforms. The additional buffers are saved by
