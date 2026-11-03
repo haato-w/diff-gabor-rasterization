@@ -13,12 +13,18 @@
 #include "cuda_projector/projector.h"
 #include "cuda_rasterizer/profiling.h"
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
 #include <cmath>
 #include <functional>
 
 namespace {
 std::function<char*(size_t)> resizeBuffer(torch::Tensor& buffer) {
     return [&buffer](size_t bytes) {
+        // Match the renderer's reusable workspace sizes for observation views.
+        constexpr size_t bucket_bytes = size_t{32} * 1024 * 1024;
+        if (bytes >= bucket_bytes) {
+            bytes = ((bytes - 1) / bucket_bytes + 1) * bucket_bytes;
+        }
         buffer.resize_({static_cast<int64_t>(bytes)});
         return reinterpret_cast<char*>(buffer.data_ptr());
     };
@@ -106,6 +112,7 @@ std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor> ProjectErrorsCUDA(
 			has_votes ? votes.data_ptr<float>() : nullptr,
 			raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold,
 			warp_culling, separate_sort, frontmost_only, debug);
+		C10_CUDA_KERNEL_LAUNCH_CHECK();
 	}
 	return std::make_tuple(rendered, errors, effects, votes);
 }

@@ -23,6 +23,7 @@
 #include "cuda_rasterizer/profiling.h"
 #include "rasterize_points.h"
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
 #include <fstream>
 #include <string>
 #include <functional>
@@ -33,6 +34,13 @@
 
 std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 	auto lambda = [&t](size_t N) {
+		// Tile-instance counts change with the view and optimized geometry.
+		// Reuse large allocation sizes instead of growing cached CUDA segments
+		// for many slightly different binning-workspace requests.
+		constexpr size_t bucket_bytes = size_t{32} * 1024 * 1024;
+		if (N >= bucket_bytes) {
+			N = ((N - 1) / bucket_bytes + 1) * bucket_bytes;
+		}
 		t.resize_({(long long)N});
 		return reinterpret_cast<char*>(t.contiguous().data_ptr());
 	};
@@ -286,6 +294,7 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 		split_sh ? sh2_rest.data_ptr<float>() : nullptr,
 		split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort,
 		has_specular ? specular_precomp.data_ptr<float>() : nullptr);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return std::make_tuple(rendered, out_color, out_others, radii, geomBuffer, binningBuffer, imgBuffer);
 }
@@ -502,6 +511,7 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	  separate_sort, backward_reduction, backward_reduction_threshold,
 	  has_specular ? specular_precomp.data_ptr<float>() : nullptr,
 	  has_specular ? dL_dspecular.data_ptr<float>() : nullptr);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
 
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image, dL_dsh_rest, dL_dsh2_rest);
@@ -1070,6 +1080,7 @@ torch::Tensor markVisible(
 		viewmatrix.contiguous().data<float>(),
 		projmatrix.contiguous().data<float>(),
 		present.contiguous().data<bool>());
+	C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
 
   return present;
