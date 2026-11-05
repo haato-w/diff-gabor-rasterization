@@ -146,7 +146,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 
 // Backward version of the rendering procedure.
-template <uint32_t C, bool Reduction = false, int Frequencies = 4, bool HasSpecular = false, bool HasAttributes = false>
+template <uint32_t C, bool Reduction = false, bool HasSpecular = false, bool HasAttributes = false>
 __global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
 renderCUDA(
 	const uint2* __restrict__ ranges,
@@ -155,10 +155,9 @@ renderCUDA(
 	float focal_x, float focal_y,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ points_xy_image,
-	const float* __restrict__ weights_for_frequency_angle, 
-	const float* __restrict__ frequency_lengths, 
+	const float* __restrict__ frequency_vectors,
+
 	const float* __restrict__ phases, 
-	const int F, 
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ transMats,
 	const float* __restrict__ colors,
@@ -172,8 +171,8 @@ renderCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dweights_for_frequency_angle, 
-	float* __restrict__ dL_dfrequency_lengths, 
+	float* __restrict__ dL_dfrequency_vectors,
+
 	float* __restrict__ dL_dphases, 
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2, 
@@ -187,8 +186,7 @@ renderCUDA(
 	// We rasterize again. Compute necessary block info.
 	auto block = cg::this_thread_block();
 	const unsigned int lane = block.thread_rank() & 31;
-	const int n_frequencies = Reduction ? Frequencies : F;
-	using Gradients = PixelGradients<C, Frequencies, HasSpecular, HasAttributes>;
+	using Gradients = PixelGradients<C, HasSpecular, HasAttributes>;
 	const uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
 	const uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
 	const uint2 pix_max = { min(pix_min.x + BLOCK_X, W), min(pix_min.y + BLOCK_Y , H) };
@@ -208,9 +206,8 @@ renderCUDA(
 	__shared__ float2 collected_xy[BLOCK_SIZE];
 	// __shared__ float2 collected_frequency[BLOCK_SIZE];
 	// __shared__ float collected_wave_length_in_pix[BLOCK_SIZE];
-	__shared__ float collected_weights_for_frequency_angle[4 * BLOCK_SIZE];
-	__shared__ float collected_frequency_lengths[4 * BLOCK_SIZE];
-	__shared__ float collected_phases[4 * BLOCK_SIZE];
+	__shared__ float collected_frequency_vectors[2 * BLOCK_SIZE];
+	__shared__ float collected_phases[BLOCK_SIZE];
 	__shared__ float4 collected_normal_opacity[BLOCK_SIZE];
 	__shared__ float collected_colors[C * BLOCK_SIZE];
 	__shared__ float collected_colors2[C * BLOCK_SIZE];
@@ -220,14 +217,6 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	// __shared__ float collected_depths[BLOCK_SIZE];
-	__shared__ float2 frequency_directions[4];
-	if (block.thread_rank() < F)
-	{
-		// Match the forward runtime direction values. The first existing
-		// batch barrier publishes them before any pixel evaluates Gabor.
-		const float angle = PI * float(block.thread_rank()) / float(F);
-		frequency_directions[block.thread_rank()] = make_float2(__cosf(angle), __sinf(angle));
-	}
 
 	// In the forward, we stored the final value for T, the
 	// product of all (1 - alpha) factors. 
@@ -328,11 +317,9 @@ renderCUDA(
 					collected_attributes[ch * BLOCK_SIZE + block.thread_rank()] = attributes[coll_id * 6 + ch];
 			}
 				// collected_depths[block.thread_rank()] = depths[coll_id];
-			for (int i = 0; i < F; i++) {
-				collected_weights_for_frequency_angle[i * BLOCK_SIZE + block.thread_rank()] = weights_for_frequency_angle[coll_id * F + i];
-				collected_frequency_lengths[i * BLOCK_SIZE + block.thread_rank()] = frequency_lengths[coll_id * F + i];
-				collected_phases[i * BLOCK_SIZE + block.thread_rank()] = phases[coll_id * F + i];
-			}
+			collected_frequency_vectors[block.thread_rank()] = frequency_vectors[2 * coll_id];
+			collected_frequency_vectors[BLOCK_SIZE + block.thread_rank()] = frequency_vectors[2 * coll_id + 1];
+			collected_phases[block.thread_rank()] = phases[coll_id];
 		}
 		block.sync();
 
@@ -420,19 +407,11 @@ renderCUDA(
 				// float dot_value = frequency_vec.x * s.x + frequency_vec.y * s.y;
 				// float dot_value = 1.0f;
 
-				float harmonic1 = 0.0f;
-				float harmonic2 = 0.0f;
-				float dot_value[Reduction ? Frequencies : 10];
-				for (int i = 0; i < n_frequencies; i++)
-				{
-					const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
-					const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
-					const float phase = collected_phases[i * BLOCK_SIZE + j];
-					const float2 direction = frequency_directions[i];
-					dot_value[i] = direction.x * s.x + direction.y * s.y;
-					harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-					harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-				}
+				const float vector_argument = 2.0f * PI * (collected_frequency_vectors[j] * s.x
+					+ collected_frequency_vectors[BLOCK_SIZE + j] * s.y) + collected_phases[j];
+				const float sine = __sinf(vector_argument);
+				const float harmonic1 = 0.5f * (1.0f + __cosf(vector_argument));
+				const float harmonic2 = 1.0f - harmonic1;
 
 				for (int ch = 0; ch < C; ch++)
 				{
@@ -486,35 +465,16 @@ renderCUDA(
 				const float g1 = collected_colors2[1 * BLOCK_SIZE + j];
 				const float b1 = collected_colors2[2 * BLOCK_SIZE + j];
 
-				const float part1 = dL_dpixel[0] * (r0 + r1) + dL_dpixel[1] * (g0 + g1) + dL_dpixel[2] * (b0 + b1);
 				const float part2 = dL_dpixel[0] * (r0 - r1) + dL_dpixel[1] * (g0 - g1) + dL_dpixel[2] * (b0 - b1);
-				float tmp_for_dsx = 0.0f;
-				float tmp_for_dsy = 0.0f;
-				for (int i = 0; i < n_frequencies; i++)
-				{
-					const float weight = collected_weights_for_frequency_angle[i * BLOCK_SIZE + j];
-					const float frequency_len = collected_frequency_lengths[i * BLOCK_SIZE + j];
-					const float phase = collected_phases[i * BLOCK_SIZE + j];
-
-					const float dcolor_dw = 0.5f * (part1 + part2 * __cosf(2.0f * PI * frequency_len * dot_value[i] + phase));
-					record_pixel_gradient<Reduction>(dL_dweights_for_frequency_angle + global_id * F + i,
-						gradients.values[Gradients::Weights + i], dchannel_dcolor * dcolor_dw, aggregate);
-
-					const float dcolor_df = -part2 * weight * PI * dot_value[i] * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
-					record_pixel_gradient<Reduction>(dL_dfrequency_lengths + global_id * F + i,
-						gradients.values[Gradients::Lengths + i], dchannel_dcolor * dcolor_df, aggregate);
-
-					const float tmp_for_dphases = -part2 * 0.5f * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase);
-					record_pixel_gradient<Reduction>(dL_dphases + global_id * F + i,
-						gradients.values[Gradients::Phases + i], dchannel_dcolor * tmp_for_dphases, aggregate);
-
-					const float tmp = weight * __sinf(2.0f * PI * frequency_len * dot_value[i] + phase) * frequency_len;
-					const float2 direction = frequency_directions[i];
-					tmp_for_dsx += tmp * direction.x;
-					tmp_for_dsy += tmp * direction.y;
-				}
-				const float dL_dsx = w * -part2 * PI * tmp_for_dsx;
-				const float dL_dsy = w * -part2 * PI * tmp_for_dsy;
+				const float vector_gradient = -part2 * PI * sine * dchannel_dcolor;
+				record_pixel_gradient<Reduction>(dL_dfrequency_vectors + 2 * global_id,
+					gradients.values[Gradients::Frequency + 0], vector_gradient * s.x, aggregate);
+				record_pixel_gradient<Reduction>(dL_dfrequency_vectors + 2 * global_id + 1,
+					gradients.values[Gradients::Frequency + 1], vector_gradient * s.y, aggregate);
+				record_pixel_gradient<Reduction>(dL_dphases + global_id,
+					gradients.values[Gradients::Phases], -0.5f * part2 * sine * dchannel_dcolor, aggregate);
+				const float dL_dsx = w * -part2 * PI * sine * collected_frequency_vectors[j];
+				const float dL_dsy = w * -part2 * PI * sine * collected_frequency_vectors[BLOCK_SIZE + j];
 
 				// d_image[pix_id] += dchannel_dcolor * dL_dw2;
 
@@ -576,13 +536,20 @@ renderCUDA(
 				dL_dz += alpha * T * dL_ddepth;
 #endif
 
-				if (rho3d <= rho2d) {
+				{
+					const bool projected_envelope = rho3d <= rho2d;
+					if (!projected_envelope) {
+						record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].x, gradients.values[Gradients::Mean + 0], dL_dG * -G * FilterInvSquare * d.x, aggregate);
+						record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].y, gradients.values[Gradients::Mean + 1], dL_dG * -G * FilterInvSquare * d.y, aggregate);
+					}
+					// The carrier depends on projective s even when the low-pass
+					// envelope wins. Only envelope/depth partials switch branches.
 					// Update gradients w.r.t. covariance of Gaussian 3x3 (T)
 					const float2 dL_ds = {
-						dL_dG * -G * s.x + dL_dsx + dL_dz * Tw.x,
-						dL_dG * -G * s.y + dL_dsy + dL_dz * Tw.y
+						dL_dsx + (projected_envelope ? dL_dG * -G * s.x + dL_dz * Tw.x : 0.f),
+						dL_dsy + (projected_envelope ? dL_dG * -G * s.y + dL_dz * Tw.y : 0.f)
 					};
-					const float3 dz_dTw = {s.x, s.y, 1.0};
+					const float3 dz_dTw = {projected_envelope ? s.x : 0.f, projected_envelope ? s.y : 0.f, 1.0f};
 					const float dsx_pz = dL_ds.x / p.z;
 					const float dsy_pz = dL_ds.y / p.z;
 					const float3 dL_dp = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
@@ -607,13 +574,6 @@ renderCUDA(
 					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 6, gradients.values[Gradients::Transform + 6], dL_dTw.x, aggregate);
 					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 7, gradients.values[Gradients::Transform + 7], dL_dTw.y, aggregate);
 					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 8, gradients.values[Gradients::Transform + 8], dL_dTw.z, aggregate);
-				} else {
-					// // Update gradients w.r.t. center of Gaussian 2D mean position
-					const float dG_ddelx = -G * FilterInvSquare * d.x;
-					const float dG_ddely = -G * FilterInvSquare * d.y;
-					record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].x, gradients.values[Gradients::Mean + 0], dL_dG * dG_ddelx, aggregate);
-					record_pixel_gradient<Reduction>(&dL_dmean2D[global_id].y, gradients.values[Gradients::Mean + 1], dL_dG * dG_ddely, aggregate);
-					record_pixel_gradient<Reduction>(dL_dtransMat + global_id * 9 + 8, gradients.values[Gradients::Transform + 8], dL_dz, aggregate);
 				}
 
 				// Update gradients w.r.t. opacity of the Gaussian
@@ -625,7 +585,7 @@ renderCUDA(
 			{
 				if (aggregate)
 					gradients.flush(collected_id[j], lane, dL_dcolors, dL_dcolors2,
-						dL_dweights_for_frequency_angle, dL_dfrequency_lengths,
+						dL_dfrequency_vectors,
 						dL_dphases, dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity, dL_dspecular, dL_dattributes);
 			}
 		}
@@ -939,10 +899,9 @@ void BACKWARD::render(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
-	const float* weights_for_frequency_angle, 
-	const float* frequency_lengths, 
+	const float* frequency_vectors,
+
 	const float* phases, 
-	const int F, 
 	const float4* normal_opacity,
 	const float* colors,
 	const float* colors2,
@@ -956,8 +915,8 @@ void BACKWARD::render(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dweights_for_frequency_angle, 
-	float* dL_dfrequency_lengths, 
+	float* dL_dfrequency_vectors,
+
 	float* dL_dphases, 
 	float* dL_dcolors,
 	float* dL_dcolors2, 
@@ -969,19 +928,18 @@ void BACKWARD::render(
 	const float* attributes,
 	float* dL_dattributes)
 {
-	auto launch = [&](auto frequencies, auto reduction, auto specular_mode, auto attributes_mode)
+	auto launch = [&](auto reduction, auto specular_mode, auto attributes_mode)
 	{
-		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(frequencies)::value, decltype(specular_mode)::value, decltype(attributes_mode)::value> << <grid, block >> >(
+		renderCUDA<NUM_CHANNELS, decltype(reduction)::value, decltype(specular_mode)::value, decltype(attributes_mode)::value> << <grid, block >> >(
 			ranges,
 			point_list,
 			W, H,
 			focal_x, focal_y,
 			bg_color,
 			means2D,
-			weights_for_frequency_angle,
-			frequency_lengths,
+			frequency_vectors,
+
 			phases,
-			F,
 			normal_opacity,
 			transMats,
 			colors,
@@ -995,8 +953,8 @@ void BACKWARD::render(
 			dL_dmean2D,
 			dL_dnormal3D,
 			dL_dopacity,
-			dL_dweights_for_frequency_angle,
-			dL_dfrequency_lengths,
+			dL_dfrequency_vectors,
+
 			dL_dphases,
 			dL_dcolors,
 			dL_dcolors2,
@@ -1004,31 +962,18 @@ void BACKWARD::render(
 			backward_reduction_threshold, specular, dL_dspecular, attributes, dL_dattributes
 			);
 	};
-	auto launch_mode = [&](auto frequencies, auto reduction)
+	auto launch_mode = [&](auto reduction)
 	{
 		auto launch_attributes = [&](auto specular_mode)
 		{
-			if (attributes) launch(frequencies, reduction, specular_mode, std::true_type{});
-			else launch(frequencies, reduction, specular_mode, std::false_type{});
+			if (attributes) launch(reduction, specular_mode, std::true_type{});
+			else launch(reduction, specular_mode, std::false_type{});
 		};
 		if (specular) launch_attributes(std::true_type{});
 		else launch_attributes(std::false_type{});
 	};
-	if (!backward_reduction)
-	{
-		launch_mode(std::integral_constant<int, 4>{}, std::false_type{});
-		return;
-	}
-	// Specialize all supported counts so gradient packages and shuffle accesses
-	// are compile-time indexed instead of spilling a dynamically indexed array.
-	switch (F)
-	{
-	case 1: launch_mode(std::integral_constant<int, 1>{}, std::true_type{}); break;
-	case 2: launch_mode(std::integral_constant<int, 2>{}, std::true_type{}); break;
-	case 3: launch_mode(std::integral_constant<int, 3>{}, std::true_type{}); break;
-	case 4: launch_mode(std::integral_constant<int, 4>{}, std::true_type{}); break;
-	default: throw std::invalid_argument("Butterfly backward requires 1 to 4 Gabor frequencies");
-	}
+	if (backward_reduction) launch_mode(std::true_type{});
+	else launch_mode(std::false_type{});
 }
 
 void BACKWARD::render_gaussian(
@@ -1039,10 +984,9 @@ void BACKWARD::render_gaussian(
 	float focal_x, float focal_y,
 	const float* bg_color,
 	const float2* means2D,
-	const float* weights_for_frequency_angle,
-	const float* frequency_lengths,
+	const float* frequency_vectors,
+
 	const float* phases,
-	const int F,
 	const float4* normal_opacity,
 	const float* colors,
 	const float* colors2,
@@ -1056,8 +1000,8 @@ void BACKWARD::render_gaussian(
 	float3* dL_dmean2D,
 	float* dL_dnormal3D,
 	float* dL_dopacity,
-	float* dL_dweights_for_frequency_angle,
-	float* dL_dfrequency_lengths,
+	float* dL_dfrequency_vectors,
+
 	float* dL_dphases,
 	float* dL_dcolors,
 	float* dL_dcolors2,
@@ -1080,14 +1024,13 @@ void BACKWARD::render_gaussian(
 	const dim3 gaussian_block(32 * GAUSSIAN_BACKWARD_WARPS);
 	auto launch = [&](auto specular_mode)
 	{
-	const auto kernel = F == 4 ? renderGaussianCUDA<4, decltype(specular_mode)::value> : renderGaussianCUDA<0, decltype(specular_mode)::value>;
+	const auto kernel = renderGaussianCUDA<decltype(specular_mode)::value>;
 	kernel<<<gaussian_grid, gaussian_block>>>(
 		ranges, point_list, W, H, bg_color, means2D,
-		weights_for_frequency_angle, frequency_lengths, phases, F,
-		normal_opacity, colors, colors2, transMats, final_Ts, n_contrib,
+		frequency_vectors,  phases, normal_opacity, colors, colors2, transMats, final_Ts, n_contrib,
 		dL_dpixels, dL_depths,
 		dL_dtransMat, dL_dmean2D, dL_dnormal3D, dL_dopacity,
-		dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases,
+		dL_dfrequency_vectors,  dL_dphases,
 		dL_dcolors, dL_dcolors2,
 		bucket_capacity, num_tiles, bucket_offsets, bucket_to_tile,
 		tile_max_contrib, bucket_color_T, bucket_depth_normal, bucket_moments,

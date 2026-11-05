@@ -193,7 +193,7 @@ void CudaRasterizer::Rasterizer::markVisible(
 		present);
 }
 
-CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P, int F)
+CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& chunk, size_t P)
 {
 	GeometryState geom;
 	obtain(chunk, geom.depths, P, 128);
@@ -201,9 +201,8 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	obtain(chunk, geom.clamped2, P * 3, 128);
 	obtain(chunk, geom.internal_radii, P, 128);
 	obtain(chunk, geom.means2D, P, 128);
-	obtain(chunk, geom.weights_for_frequency_angle, P * F, 128);
-	obtain(chunk, geom.frequency_lengths, P * F, 128);
-	obtain(chunk, geom.phases, P * F, 128);
+	obtain(chunk, geom.frequency_vectors, P * 2, 128);
+	obtain(chunk, geom.phases, P, 128);
 	obtain(chunk, geom.transMat, P * 9, 128);
 	obtain(chunk, geom.normal_opacity, P, 128);
 	obtain(chunk, geom.rgb, P * 3, 128);
@@ -217,7 +216,7 @@ CudaRasterizer::GeometryState CudaRasterizer::GeometryState::fromChunk(char*& ch
 	return geom;
 }
 
-CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N, int F)
+CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, size_t N)
 {
 	ImageState img;
 	obtain(chunk, img.accum_alpha, N * 3, 128);
@@ -227,7 +226,7 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 }
 
 CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(
-	char*& chunk, size_t P, int F, bool separate_sort, int tiles)
+	char*& chunk, size_t P, bool separate_sort, int tiles)
 {
 	BinningState binning{};
 	obtain(chunk, binning.point_list, P, 128);
@@ -260,7 +259,7 @@ CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(
 	return binning;
 }
 
-CudaRasterizer::DepthSortState CudaRasterizer::DepthSortState::fromChunk(char*& chunk, size_t P, int F)
+CudaRasterizer::DepthSortState CudaRasterizer::DepthSortState::fromChunk(char*& chunk, size_t P)
 {
 	DepthSortState state;
 	obtain(chunk, state.visible_ids, P, 128);
@@ -303,10 +302,9 @@ int CudaRasterizer::Rasterizer::forward(
 	const int width, int height,
 	const float* means3D,
 	// const float* frequencies,
-	const float* weights_for_frequency_angle, 
-	const float* frequency_lengths, 
+	const float* frequency_vectors,
+
 	const float* phases, 
-	const int F, // the number of frequency candidates
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -343,17 +341,17 @@ int CudaRasterizer::Rasterizer::forward(
 	const float focal_x = width / (2.0f * tan_fovx);
 
 	Profiling::Scope allocate_timing("forward.allocate");
-	size_t chunk_size = required<GeometryState>(P, F);
+	size_t chunk_size = required<GeometryState>(P);
 	// Forward-only bounds follow the established geometry layout. Backward can
 	// reconstruct its unchanged state and ignore these trailing checkpoints.
 	if (warp_culling) chunk_size += size_t(P) * sizeof(float4) + 128;
-	if (separate_sort) chunk_size += required<DepthSortState>(P, F);
+	if (separate_sort) chunk_size += required<DepthSortState>(P);
 	char* chunkptr = geometryBuffer(chunk_size);
-	GeometryState geomState = GeometryState::fromChunk(chunkptr, P, F);
+	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 	float4* pixel_bounds = nullptr;
 	if (warp_culling) obtain(chunkptr, pixel_bounds, P, 128);
 	DepthSortState depthState{};
-	if (separate_sort) depthState = DepthSortState::fromChunk(chunkptr, P, F);
+	if (separate_sort) depthState = DepthSortState::fromChunk(chunkptr, P);
 
 	if (radii == nullptr)
 	{
@@ -364,9 +362,9 @@ int CudaRasterizer::Rasterizer::forward(
 	dim3 block(BLOCK_X, BLOCK_Y, 1);
 
 	// Dynamically resize image-based auxiliary buffers during training
-	size_t img_chunk_size = required<ImageState>(width * height, F);
+	size_t img_chunk_size = required<ImageState>(width * height);
 	char* img_chunkptr = imageBuffer(img_chunk_size);
-	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height, F);
+	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 	allocate_timing.stop();
 
 	if (NUM_CHANNELS != 3 && colors_precomp == nullptr)
@@ -381,10 +379,9 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(FORWARD::preprocess(
 		P, D, M,
 		means3D,
-		weights_for_frequency_angle, 
-		frequency_lengths, 
+		frequency_vectors,
+
 		phases, 
-		F, 
 		(glm::vec2*)scales,
 		scale_modifier,
 		(glm::vec4*)rotations,
@@ -403,8 +400,8 @@ int CudaRasterizer::Rasterizer::forward(
 		tan_fovx, tan_fovy,
 		radii,
 		geomState.means2D,
-		geomState.weights_for_frequency_angle, // geomStateに入れる必要ないかも？
-		geomState.frequency_lengths, // geomStateに入れる必要ないかも？
+		geomState.frequency_vectors, // geomStateに入れる必要ないかも？
+		 // geomStateに入れる必要ないかも？
 		geomState.phases, // geomStateに入れる必要ないかも？
 		geomState.depths,
 		geomState.transMat,
@@ -487,12 +484,12 @@ int CudaRasterizer::Rasterizer::forward(
 
 	Profiling::Scope binning_timing("forward.allocate_binning");
 	const int num_tiles = tile_grid.x * tile_grid.y;
-	size_t binning_chunk_size = required<BinningState>(num_rendered, F, separate_sort, num_tiles);
+	size_t binning_chunk_size = required<BinningState>(num_rendered, separate_sort, num_tiles);
 	const int bucket_capacity = gaussian_backward ? bucketCapacity(num_rendered, num_tiles) : 0;
 	if (gaussian_backward)
 		binning_chunk_size += required<BucketState>(num_tiles, bucket_capacity);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
-	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, F, separate_sort, num_tiles);
+	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered, separate_sort, num_tiles);
 	BucketState bucketState{};
 	if (gaussian_backward)
 		bucketState = BucketState::fromChunk(binning_chunkptr, num_tiles, bucket_capacity);
@@ -606,10 +603,9 @@ int CudaRasterizer::Rasterizer::forward(
 		width, height,
 		focal_x, focal_y,
 		geomState.means2D,
-		geomState.weights_for_frequency_angle, 
-		geomState.frequency_lengths, 
+		geomState.frequency_vectors,
+
 		geomState.phases, 
-		F, 
 		feature_ptr,
 		feature_ptr2,
 		transMat_ptr,
@@ -642,10 +638,9 @@ void CudaRasterizer::Rasterizer::backward(
 	const float* background,
 	const int width, int height,
 	const float* means3D,
-	const float* weights_for_frequency_angle, 
-	const float* frequency_lengths, 
+	const float* frequency_vectors,
+
 	const float* phases, 
-	const int F, // the number of frequency candidates
 	const float* shs,
 	const float* shs2,
 	const float* colors_precomp,
@@ -667,8 +662,8 @@ void CudaRasterizer::Rasterizer::backward(
 	float* dL_dmean2D,
 	float* dL_dnormal,
 	float* dL_dopacity,
-	float* dL_dweights_for_frequency_angle, 
-	float* dL_dfrequency_lengths, 
+	float* dL_dfrequency_vectors,
+
 	float* dL_dphases, 
 	float* dL_dcolor,
 	float* dL_dcolor2,
@@ -699,9 +694,9 @@ void CudaRasterizer::Rasterizer::backward(
 {
 	Profiling::Scope allocate_timing("backward.allocate");
 	const int num_tiles = ((width + BLOCK_X - 1) / BLOCK_X) * ((height + BLOCK_Y - 1) / BLOCK_Y);
-	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P, F);
-	BinningState binningState = BinningState::fromChunk(binning_buffer, R, F, separate_sort, num_tiles);
-	ImageState imgState = ImageState::fromChunk(img_buffer, width * height, F);
+	GeometryState geomState = GeometryState::fromChunk(geom_buffer, P);
+	BinningState binningState = BinningState::fromChunk(binning_buffer, R, separate_sort, num_tiles);
+	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	allocate_timing.stop();
 
 	if (radii == nullptr)
@@ -732,13 +727,12 @@ void CudaRasterizer::Rasterizer::backward(
 		BACKWARD::render_gaussian(
 			tile_grid, block, imgState.ranges, binningState.point_list,
 			width, height, focal_x, focal_y, background,
-			geomState.means2D, geomState.weights_for_frequency_angle,
-			geomState.frequency_lengths, geomState.phases, F,
-			geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
+			geomState.means2D, geomState.frequency_vectors,
+			 geomState.phases, geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
 			depth_ptr, imgState.accum_alpha, imgState.n_contrib,
 			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
-			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
-			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
+			dL_dnormal, dL_dopacity, dL_dfrequency_vectors,
+			 dL_dphases, dL_dcolor, dL_dcolor2,
 			d_image, bucket_capacity, num_tiles, bucketState.offsets,
 			bucketState.to_tile, bucketState.tile_max_contrib,
 			bucketState.color_T, bucketState.depth_normal,
@@ -749,13 +743,12 @@ void CudaRasterizer::Rasterizer::backward(
 		BACKWARD::render(
 			tile_grid, block, imgState.ranges, binningState.point_list,
 			width, height, focal_x, focal_y, background,
-			geomState.means2D, geomState.weights_for_frequency_angle,
-			geomState.frequency_lengths, geomState.phases, F,
-			geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
+			geomState.means2D, geomState.frequency_vectors,
+			 geomState.phases, geomState.normal_opacity, color_ptr, color_ptr2, transMat_ptr,
 			depth_ptr, imgState.accum_alpha, imgState.n_contrib,
 			dL_dpix, dL_depths, dL_dtransMat, (float3*)dL_dmean2D,
-			dL_dnormal, dL_dopacity, dL_dweights_for_frequency_angle,
-			dL_dfrequency_lengths, dL_dphases, dL_dcolor, dL_dcolor2,
+			dL_dnormal, dL_dopacity, dL_dfrequency_vectors,
+			 dL_dphases, dL_dcolor, dL_dcolor2,
 			d_image, backward_reduction, backward_reduction_threshold, specular, dL_dspecular,
 			attributes, dL_dattributes);
 	}

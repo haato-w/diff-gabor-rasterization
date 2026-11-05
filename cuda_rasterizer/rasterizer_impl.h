@@ -37,8 +37,8 @@ namespace CudaRasterizer
 		bool* clamped2;
 		int* internal_radii;
 		float2* means2D;
-		float* weights_for_frequency_angle;
-		float* frequency_lengths;
+		float* frequency_vectors;
+
 		float* phases;
 		float* transMat;
 		float4* normal_opacity;
@@ -51,7 +51,7 @@ namespace CudaRasterizer
 		// Opacity-cutoff projective ellipse and unchanged low-pass disk.
 		TileSupport* tile_supports;
 
-		static GeometryState fromChunk(char*& chunk, size_t P, int F);
+		static GeometryState fromChunk(char*& chunk, size_t P);
 	};
 
 	struct ImageState
@@ -60,7 +60,7 @@ namespace CudaRasterizer
 		uint32_t* n_contrib;
 		float* accum_alpha;
 
-		static ImageState fromChunk(char*& chunk, size_t N, int F);
+		static ImageState fromChunk(char*& chunk, size_t N);
 	};
 
 	struct BinningState
@@ -76,7 +76,7 @@ namespace CudaRasterizer
 		uint32_t* point_list;
 		char* list_sorting_space;
 
-		static BinningState fromChunk(char*& chunk, size_t P, int F,
+		static BinningState fromChunk(char*& chunk, size_t P,
 			bool separate_sort = false, int tiles = 0);
 	};
 
@@ -94,7 +94,7 @@ namespace CudaRasterizer
 		uint32_t* counts; // [primitive/tile instance count, visible primitive count]
 		char* workspace;
 
-		static DepthSortState fromChunk(char*& chunk, size_t P, int F);
+		static DepthSortState fromChunk(char*& chunk, size_t P);
 	};
 
 	// Optional training checkpoints, appended after BinningState. A bucket is
@@ -115,10 +115,10 @@ namespace CudaRasterizer
 	};
 
 	template<typename T, typename... Args>
-	size_t required(size_t P, int F, Args... args)
+	size_t required(size_t P, Args... args)
 	{
 		char* size = nullptr;
-		T::fromChunk(size, P, F, args...);
+		T::fromChunk(size, P, args...);
 		return ((size_t)size) + 128;
 	}
 };

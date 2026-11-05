@@ -16,20 +16,19 @@
 #include <string>
 
 using RasterizeResult = std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
-using RasterizeBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
-using RasterizeFusedBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
+using RasterizeBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
+using RasterizeFusedBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
 
-using RasterizeAttributesBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
+using RasterizeAttributesBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
 
-using RasterizeSpecularBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
+using RasterizeSpecularBackwardResult = std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>;
 
 RasterizeResult RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -53,10 +52,9 @@ RasterizeResult RasterizeGaborsCUDA(
 RasterizeResult RasterizeGaborsFusedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -85,10 +83,9 @@ RasterizeResult RasterizeGaborsFusedCUDA(
 RasterizeResult RasterizeGaborsBoundedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -119,10 +116,9 @@ RasterizeResult RasterizeGaborsBoundedCUDA(
 RasterizeResult RasterizeGaborsCulledCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -154,10 +150,9 @@ RasterizeResult RasterizeGaborsCulledCUDA(
 RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -184,10 +179,9 @@ RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
 RasterizeFusedBackwardResult RasterizeGaborsBackwardFusedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -219,10 +213,9 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardFusedCUDA(
 RasterizeResult RasterizeGaborsGaussianBackwardCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -256,10 +249,9 @@ RasterizeResult RasterizeGaborsGaussianBackwardCUDA(
 RasterizeResult RasterizeGaborsWarpCulledCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -294,10 +286,9 @@ RasterizeResult RasterizeGaborsWarpCulledCUDA(
 RasterizeResult RasterizeGaborsSeparateSortedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -332,10 +323,9 @@ RasterizeResult RasterizeGaborsSeparateSortedCUDA(
 RasterizeFusedBackwardResult RasterizeGaborsBackwardGaussianCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -370,10 +360,9 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardGaussianCUDA(
 RasterizeFusedBackwardResult RasterizeGaborsBackwardSeparateSortedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -409,10 +398,9 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardSeparateSortedCUDA(
 RasterizeFusedBackwardResult RasterizeGaborsBackwardButterflyCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -449,10 +437,9 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardButterflyCUDA(
 RasterizeResult RasterizeGaborsSpecularCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -488,10 +475,9 @@ RasterizeResult RasterizeGaborsSpecularCUDA(
 RasterizeSpecularBackwardResult RasterizeGaborsBackwardSpecularCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -535,10 +521,9 @@ torch::Tensor markVisible(
 RasterizeResult RasterizeGaborsAttributesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -575,10 +560,9 @@ RasterizeResult RasterizeGaborsAttributesCUDA(
 RasterizeAttributesBackwardResult RasterizeGaborsBackwardAttributesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,

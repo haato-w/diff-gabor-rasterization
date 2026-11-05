@@ -255,10 +255,9 @@ __device__ void tighten_tile_rect(
 template<int C>
 __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	const float* orig_points,
-	const float* weights_for_frequency_angle, 
-	const float* frequency_lengths, 
+	const float* frequency_vectors,
+
 	const float* phases, 
-	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -278,8 +277,8 @@ __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	float* geo_weights_for_frequency_angle, 
-	float* geo_frequency_lengths, 
+	float* geo_frequency_vectors,
+
 	float* geo_phases, 
 	float* depths,
 	float* transMats,
@@ -388,12 +387,9 @@ __device__ __forceinline__ void preprocessPrimitive(int P, int D, int M,
 		rgb2[idx * C + 2] = result2.z;
 	} 
 
-	for (int i = 0; i < F; i++)
-	{
-		geo_weights_for_frequency_angle[idx * F + i] = weights_for_frequency_angle[idx * F + i];
-		geo_frequency_lengths[idx * F + i] = frequency_lengths[idx * F + i];
-		geo_phases[idx * F + i] = phases[idx * F + i];
-	}
+	geo_frequency_vectors[2 * idx] = frequency_vectors[2 * idx];
+	geo_frequency_vectors[2 * idx + 1] = frequency_vectors[2 * idx + 1];
+	geo_phases[idx] = phases[idx];
 
 	depths[idx] = p_view.z;
 	radii[idx] = (int)radius;
@@ -436,10 +432,9 @@ __device__ __forceinline__ void collect_visible_primitives(
 template<int C, bool TileCulling, bool LoadBalance, bool CollectVisibility>
 __global__ void preprocessCUDA(int P, int D, int M,
 	const float* orig_points,
-	const float* weights_for_frequency_angle,
-	const float* frequency_lengths,
+	const float* frequency_vectors,
+
 	const float* phases,
-	const int F,
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -459,8 +454,8 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	const float focal_x, const float focal_y,
 	int* radii,
 	float2* points_xy_image,
-	float* geo_weights_for_frequency_angle,
-	float* geo_frequency_lengths,
+	float* geo_frequency_vectors,
+
 	float* geo_phases,
 	float* depths,
 	float* transMats,
@@ -487,12 +482,12 @@ __global__ void preprocessCUDA(int P, int D, int M,
 	uint32_t* visibility_counts)
 {
 	preprocessPrimitive<C>(
-		P, D, M, orig_points, weights_for_frequency_angle, frequency_lengths,
-		phases, F, scales, scale_modifier, rotations, opacities, shs, shs2,
+		P, D, M, orig_points, frequency_vectors,
+		phases, scales, scale_modifier, rotations, opacities, shs, shs2,
 		clamped, clamped2, transMat_precomp, colors_precomp, colors_precomp2,
 		viewmatrix, projmatrix, cam_pos, W, H, tan_fovx, tan_fovy, focal_x,
-		focal_y, radii, points_xy_image, geo_weights_for_frequency_angle,
-		geo_frequency_lengths, geo_phases, depths, transMats, rgb, rgb2,
+		focal_y, radii, points_xy_image, geo_frequency_vectors,
+		 geo_phases, depths, transMats, rgb, rgb2,
 		normal_opacity, grid, tiles_touched, prefiltered, shs_rest, shs2_rest,
 		split_sh, raw_inputs, tile_bounds, tight_bbox, tile_supports, TileCulling,
 		warp_culling, pixel_bounds);
@@ -530,10 +525,9 @@ renderCUDA(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* __restrict__ points_xy_image,
-	const float* __restrict__ geo_weights_for_frequency_angle, 
-	const float* __restrict__ geo_frequency_lengths, 
+	const float* __restrict__ geo_frequency_vectors,
+
 	const float* __restrict__ geo_phases, 
-	const int F, 
 	const float* __restrict__ features,
 	const float* __restrict__ features2,
 	const float* __restrict__ transMats,
@@ -601,16 +595,6 @@ renderCUDA(
 	__shared__ float3 collected_Tv[BLOCK_SIZE];
 	__shared__ float3 collected_Tw[BLOCK_SIZE];
 	__shared__ float4 collected_bounds[WarpCulling ? BLOCK_SIZE : 1];
-	__shared__ float2 frequency_directions[4];
-	if (thread < F)
-	{
-		// Keep the runtime SFU expression: constant-folded directions can
-		// change phase/gradient rounding for tiny projective surfels.
-		const float angle = PI * float(thread) / float(F);
-		frequency_directions[thread] = make_float2(__cosf(angle), __sinf(angle));
-	}
-	// The existing batch barriers publish these four directions. All pixels
-	// share them for every primitive, without per-thread direction arrays.
 
 	// Initialize helper variables
 	float T = 1.0f;
@@ -748,18 +732,11 @@ renderCUDA(
 
 			// Alpha and termination do not depend on Gabor color. Evaluate
 			// harmonics only for contributions that reach RGB accumulation.
-			float harmonic1 = 0.0f;
-			float harmonic2 = 0.0f;
-			for (int i = 0; i < F; i++)
-			{
-				const float weight = geo_weights_for_frequency_angle[collected_id[j] * F + i];
-				const float frequency_length = geo_frequency_lengths[collected_id[j] * F + i];
-				const float phase = geo_phases[collected_id[j] * F + i];
-				const float2 direction = frequency_directions[i];
-				const float dot_value = direction.x * s.x + direction.y * s.y;
-				harmonic1 += weight * 0.5f * (1.0f + __cosf(2.0f * PI * frequency_length * dot_value + phase));
-				harmonic2 += weight * 0.5f * (1.0f - __cosf(2.0f * PI * frequency_length * dot_value + phase));
-			}
+			const int id = collected_id[j];
+			const float argument = 2.0f * PI * (geo_frequency_vectors[2 * id] * s.x
+				+ geo_frequency_vectors[2 * id + 1] * s.y) + geo_phases[id];
+			const float harmonic1 = 0.5f * (1.0f + __cosf(argument));
+			const float harmonic2 = 1.0f - harmonic1;
 
 			float w = alpha * T;
 #if RENDER_AXUTILITY
@@ -856,10 +833,9 @@ void FORWARD::render(
 	int W, int H,
 	float focal_x, float focal_y,
 	const float2* means2D,
-	const float* geo_weights_for_frequency_angle, 
-	const float* geo_frequency_lengths, 
+	const float* geo_frequency_vectors,
+
 	const float* geo_phases, 
-	const int F, 
 	const float* colors,
 	const float* colors2,
 	const float* transMats,
@@ -890,10 +866,9 @@ void FORWARD::render(
 		W, H,
 		focal_x, focal_y,
 		means2D,
-		geo_weights_for_frequency_angle, 
-		geo_frequency_lengths, 
+		geo_frequency_vectors,
+
 		geo_phases, 
-		F, 
 		colors,
 		colors2,
 		transMats,
@@ -936,10 +911,9 @@ void FORWARD::render(
 
 void FORWARD::preprocess(int P, int D, int M,
 	const float* means3D,
-	const float* weights_for_frequency_angle, 
-	const float* frequency_lengths, 
+	const float* frequency_vectors,
+
 	const float* phases, 
-	const int F, 
 	const glm::vec2* scales,
 	const float scale_modifier,
 	const glm::vec4* rotations,
@@ -959,8 +933,8 @@ void FORWARD::preprocess(int P, int D, int M,
 	const float tan_fovx, const float tan_fovy,
 	int* radii,
 	float2* means2D,
-	float* geo_weights_for_frequency_angle, 
-	float* geo_frequency_lengths, 
+	float* geo_frequency_vectors,
+
 	float* geo_phases, 
 	float* depths,
 	float* transMats,
@@ -992,10 +966,9 @@ void FORWARD::preprocess(int P, int D, int M,
 			decltype(balance_mode)::value, decltype(compact_mode)::value> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
-		weights_for_frequency_angle, 
-		frequency_lengths, 
+		frequency_vectors,
+
 		phases, 
-		F, 
 		scales,
 		scale_modifier,
 		rotations,
@@ -1015,8 +988,8 @@ void FORWARD::preprocess(int P, int D, int M,
 		focal_x, focal_y,
 		radii,
 		means2D,
-		geo_weights_for_frequency_angle,
-		geo_frequency_lengths, 
+		geo_frequency_vectors,
+
 		geo_phases, 
 		depths,
 		transMats,

@@ -25,10 +25,9 @@ namespace FORWARD
 	// Perform initial steps for each Gaussian prior to rasterization.
 	void preprocess(int P, int D, int M,
 		const float* orig_points,
-		const float* weights_for_frequency_angle, 
-		const float* frequency_lengths, 
+		const float* frequency_vectors,
+
 		const float* phases, 
-		const int F, 
 		const glm::vec2* scales,
 		const float scale_modifier,
 		const glm::vec4* rotations,
@@ -48,8 +47,8 @@ namespace FORWARD
 		const float tan_fovx, float tan_fovy,
 		int* radii,
 		float2* points_xy_image,
-		float* geo_weights_for_frequency_angle, 
-		float* geo_frequency_lengths, 
+		float* geo_frequency_vectors,
+
 		float* geo_phases, 
 		float* depths,
 		// float* isovals,
@@ -85,10 +84,9 @@ namespace FORWARD
 		int W, int H,
 		float focal_x, float focal_y,
 		const float2* points_xy_image,
-		const float* geo_weights_for_frequency_angle, 
-		const float* geo_frequency_lengths, 
+		const float* geo_frequency_vectors,
+
 		const float* geo_phases, 
-		const int F, 
 		const float* features,
 		const float* features2,
 		const float* transMats,

@@ -130,7 +130,7 @@ __forceinline__ __device__ GaussianBackwardPixel load_gaussian_pixel(
 	return state;
 }
 
-template <int FIXED_F, bool HasSpecular = false>
+template <bool HasSpecular = false>
 __global__ void __launch_bounds__(32 * GAUSSIAN_BACKWARD_WARPS)
 renderGaussianCUDA(
 	const uint2* __restrict__ ranges,
@@ -138,10 +138,9 @@ renderGaussianCUDA(
 	int W, int H,
 	const float* __restrict__ bg_color,
 	const float2* __restrict__ means2D,
-	const float* __restrict__ weights_for_frequency_angle,
-	const float* __restrict__ frequency_lengths,
+	const float* __restrict__ frequency_vectors,
+
 	const float* __restrict__ phases,
-	int F,
 	const float4* __restrict__ normal_opacity,
 	const float* __restrict__ colors,
 	const float* __restrict__ colors2,
@@ -154,8 +153,8 @@ renderGaussianCUDA(
 	float3* __restrict__ dL_dmean2D,
 	float* __restrict__ dL_dnormal3D,
 	float* __restrict__ dL_dopacity,
-	float* __restrict__ dL_dweights_for_frequency_angle,
-	float* __restrict__ dL_dfrequency_lengths,
+	float* __restrict__ dL_dfrequency_vectors,
+
 	float* __restrict__ dL_dphases,
 	float* __restrict__ dL_dcolors,
 	float* __restrict__ dL_dcolors2,
@@ -171,8 +170,6 @@ renderGaussianCUDA(
 	const float* __restrict__ specular,
 	float* __restrict__ dL_dspecular)
 {
-	constexpr int MAX_F = FIXED_F ? FIXED_F : 10;
-	const int n_frequencies = FIXED_F ? FIXED_F : F;
 	const unsigned lane = threadIdx.x & 31;
 	const unsigned warp_in_block = threadIdx.x / 32;
 	const unsigned bucket_idx = blockIdx.x * GAUSSIAN_BACKWARD_WARPS + warp_in_block;
@@ -194,8 +191,7 @@ renderGaussianCUDA(
 	float3 Tu = {}, Tv = {}, Tw = {};
 	float color1[3] = {}, color2[3] = {};
 	float specular_color[3] = {};
-	float weights[MAX_F] = {}, lengths[MAX_F] = {}, frequency_phases[MAX_F] = {};
-	float angle_x[MAX_F], angle_y[MAX_F];
+	float frequency_x = 0.f, frequency_y = 0.f, phase = 0.f;
 	if (valid_primitive)
 	{
 		primitive = point_list[range.x + instance];
@@ -211,28 +207,14 @@ renderGaussianCUDA(
 			color2[ch] = colors2[3 * primitive + ch];
 			if constexpr (HasSpecular) specular_color[ch] = specular[3 * primitive + ch];
 		}
-		#pragma unroll
-		for (int f = 0; f < n_frequencies; ++f)
-		{
-			weights[f] = weights_for_frequency_angle[F * primitive + f];
-			lengths[f] = frequency_lengths[F * primitive + f];
-			frequency_phases[f] = phases[F * primitive + f];
-		}
-	}
-	#pragma unroll
-	for (int f = 0; f < n_frequencies; ++f)
-	{
-		// Keep the runtime divisor even for the unrolled F=4 path. Folding
-		// __sinf/__cosf at compile time uses different rounding from the
-		// legacy runtime intrinsics. Huge local coordinates in subpixel
-		// surfels amplify a one-ULP angle change in frequency gradients.
-		angle_x[f] = __cosf(PI * float(f) / float(F));
-		angle_y[f] = __sinf(PI * float(f) / float(F));
+		frequency_x = frequency_vectors[2 * primitive];
+		frequency_y = frequency_vectors[2 * primitive + 1];
+		phase = phases[primitive];
 	}
 
 	float grad_color1[3] = {}, grad_color2[3] = {};
 	float grad_specular[3] = {};
-	float grad_weights[MAX_F] = {}, grad_lengths[MAX_F] = {}, grad_phases[MAX_F] = {};
+	float grad_frequency_x = 0.f, grad_frequency_y = 0.f, grad_phase = 0.f;
 	float grad_T[9] = {};
 	float3 grad_normal = {};
 	float2 grad_mean = {};
@@ -290,18 +272,10 @@ renderGaussianCUDA(
 			continue;
 		contributed = true;
 		const float weight = alpha * state.T;
-		float harmonic1 = 0.0f, harmonic2 = 0.0f;
-		float dot_value[MAX_F], sine[MAX_F], cosine[MAX_F];
-		#pragma unroll
-		for (int f = 0; f < n_frequencies; ++f)
-		{
-			dot_value[f] = angle_x[f] * s.x + angle_y[f] * s.y;
-			const float argument = 2.0f * PI * lengths[f] * dot_value[f] + frequency_phases[f];
-			cosine[f] = __cosf(argument);
-			sine[f] = __sinf(argument);
-			harmonic1 += weights[f] * 0.5f * (1.0f + cosine[f]);
-			harmonic2 += weights[f] * 0.5f * (1.0f - cosine[f]);
-		}
+		const float argument = 2.0f * PI * (frequency_x * s.x + frequency_y * s.y) + phase;
+		const float sine = __sinf(argument);
+		const float harmonic1 = 0.5f * (1.f + __cosf(argument));
+		const float harmonic2 = 1.f - harmonic1;
 		const float pixel_gradient[3] = {state.grad_rgb.x, state.grad_rgb.y, state.grad_rgb.z};
 		float local_loss = 0.0f;
 		#pragma unroll
@@ -341,30 +315,23 @@ renderGaussianCUDA(
 			+ 2.0f * weight * (m * state.distortion_A - state.distortion_D) * dmd_dd;
 		if (instance + 1 == state.median_contributor)
 			grad_depth += state.grad_median;
-		const float part1 = pixel_gradient[0] * (color1[0] + color2[0])
-			+ pixel_gradient[1] * (color1[1] + color2[1])
-			+ pixel_gradient[2] * (color1[2] + color2[2]);
 		const float part2 = pixel_gradient[0] * (color1[0] - color2[0])
 			+ pixel_gradient[1] * (color1[1] - color2[1])
 			+ pixel_gradient[2] * (color1[2] - color2[2]);
-		float tmp_dsx = 0.0f, tmp_dsy = 0.0f;
-		#pragma unroll
-		for (int f = 0; f < n_frequencies; ++f)
+		const float vector_gradient = -part2 * PI * sine * weight;
+		grad_frequency_x += vector_gradient * s.x;
+		grad_frequency_y += vector_gradient * s.y;
+		grad_phase += -.5f * part2 * sine * weight;
+		const float tmp_dsx = sine * frequency_x, tmp_dsy = sine * frequency_y;
 		{
-			grad_weights[f] += weight * (0.5f * (part1 + part2 * cosine[f]));
-			grad_lengths[f] += weight * (-part2 * weights[f] * PI * dot_value[f] * sine[f]);
-			// Preserve the legacy phase derivative for reference-mode parity.
-			// Correcting its missing mixture weight is a separate behavior change.
-			grad_phases[f] += weight * (-part2 * 0.5f * sine[f]);
-			const float tmp = weights[f] * sine[f] * lengths[f];
-			tmp_dsx += tmp * angle_x[f];
-			tmp_dsy += tmp * angle_y[f];
-		}
-		if (rho3d <= rho2d)
-		{
+			const bool projected_envelope = rho3d <= rho2d;
+			if (!projected_envelope) {
+				grad_mean.x += grad_gaussian * (-gaussian * FilterInvSquare * delta.x);
+				grad_mean.y += grad_gaussian * (-gaussian * FilterInvSquare * delta.y);
+			}
 			const float2 grad_s = {
-				grad_gaussian * -gaussian * s.x + weight * -part2 * PI * tmp_dsx + grad_depth * Tw.x,
-				grad_gaussian * -gaussian * s.y + weight * -part2 * PI * tmp_dsy + grad_depth * Tw.y
+				weight * -part2 * PI * tmp_dsx + (projected_envelope ? grad_gaussian * -gaussian * s.x + grad_depth * Tw.x : 0.f),
+				weight * -part2 * PI * tmp_dsy + (projected_envelope ? grad_gaussian * -gaussian * s.y + grad_depth * Tw.y : 0.f)
 			};
 			const float dsx_pz = grad_s.x / p.z, dsy_pz = grad_s.y / p.z;
 			const float3 grad_p = {dsx_pz, dsy_pz, -(dsx_pz * s.x + dsy_pz * s.y)};
@@ -375,15 +342,9 @@ renderGaussianCUDA(
 			grad_T[3] += -grad_l.x;
 			grad_T[4] += -grad_l.y;
 			grad_T[5] += -grad_l.z;
-			grad_T[6] += px * grad_k.x + py * grad_l.x + grad_depth * s.x;
-			grad_T[7] += px * grad_k.y + py * grad_l.y + grad_depth * s.y;
+			grad_T[6] += px * grad_k.x + py * grad_l.x + (projected_envelope ? grad_depth * s.x : 0.f);
+			grad_T[7] += px * grad_k.y + py * grad_l.y + (projected_envelope ? grad_depth * s.y : 0.f);
 			grad_T[8] += px * grad_k.z + py * grad_l.z + grad_depth;
-		}
-		else
-		{
-			grad_mean.x += grad_gaussian * (-gaussian * FilterInvSquare * delta.x);
-			grad_mean.y += grad_gaussian * (-gaussian * FilterInvSquare * delta.y);
-			grad_T[8] += grad_depth;
 		}
 		state.T *= one_minus_alpha;
 	}
@@ -398,13 +359,9 @@ renderGaussianCUDA(
 			if constexpr (HasSpecular)
 				atomicAdd(dL_dspecular + primitive * 3 + ch, grad_specular[ch]);
 		}
-		#pragma unroll
-		for (int f = 0; f < n_frequencies; ++f)
-		{
-			atomicAdd(dL_dweights_for_frequency_angle + primitive * F + f, grad_weights[f]);
-			atomicAdd(dL_dfrequency_lengths + primitive * F + f, grad_lengths[f]);
-			atomicAdd(dL_dphases + primitive * F + f, grad_phases[f]);
-		}
+		atomicAdd(dL_dfrequency_vectors + 2 * primitive, grad_frequency_x);
+		atomicAdd(dL_dfrequency_vectors + 2 * primitive + 1, grad_frequency_y);
+		atomicAdd(dL_dphases + primitive, grad_phase);
 		#pragma unroll
 		for (int coordinate = 0; coordinate < 9; ++coordinate)
 			atomicAdd(dL_dtransMat + primitive * 9 + coordinate, grad_T[coordinate]);

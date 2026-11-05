@@ -82,20 +82,17 @@ void checkSH(const torch::Tensor& sh, const torch::Tensor& rest, int64_t points,
   }
 }
 
-void checkFusedInputs(const torch::Tensor& means3D, const torch::Tensor& weights,
-                      const torch::Tensor& lengths, const torch::Tensor& phases,
-                      int frequency_count, const torch::Tensor& scales,
+void checkFusedInputs(const torch::Tensor& means3D, const torch::Tensor& frequency_vectors,
+                      const torch::Tensor& phases, const torch::Tensor& scales,
                       const torch::Tensor& rotations, const torch::Tensor& transform,
                       const torch::Tensor& sh, const torch::Tensor& sh2,
                       const torch::Tensor& rest, const torch::Tensor& rest2,
                       const torch::Tensor& colors, const torch::Tensor& colors2,
                       int degree, bool split_sh, bool raw_inputs) {
   TORCH_CHECK(degree >= 0 && degree <= 3, "SH degree must be between 0 and 3");
-  TORCH_CHECK(frequency_count >= 1 && frequency_count <= 4, "F must be between 1 and 4");
   const auto points = means3D.size(0);
-  checkShape(weights, points, frequency_count, "weights_for_frequency_angle");
-  checkShape(lengths, points, frequency_count, "frequency_lengths");
-  checkShape(phases, points, frequency_count, "phases");
+  checkShape(frequency_vectors, points, 2, "frequency_vectors");
+  checkShape(phases, points, 1, "phases");
   // A provided transform remains distinct from the empty [0] descriptor
   // when the scene has no primitives (for example, shape [0, 9]).
   const bool has_transform = transform.numel() != 0 || transform.dim() > 1;
@@ -124,10 +121,9 @@ void checkFusedInputs(const torch::Tensor& means3D, const torch::Tensor& weights
 static RasterizeResult RasterizeGaborsCUDAImpl(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -161,7 +157,6 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 	const torch::Tensor& specular_precomp = torch::Tensor(),
 	const torch::Tensor& attributes_precomp = torch::Tensor())
 {
-  TORCH_CHECK(F >= 1 && F <= 4, "F must be between 1 and 4");
   TORCH_CHECK(tile_culling_threshold >= 0 && tile_culling_threshold <= 32,
               "tile_culling_threshold must be between 0 and 32");
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
@@ -186,9 +181,10 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
-  CHECK_INPUT(weights_for_frequency_angle);
-  CHECK_INPUT(frequency_lengths);
+  CHECK_INPUT(frequency_vectors);
   CHECK_INPUT(phases);
+  checkShape(frequency_vectors, means3D.size(0), 2, "frequency_vectors");
+  checkShape(phases, means3D.size(0), 1, "phases");
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
   CHECK_INPUT(opacity);
@@ -203,13 +199,12 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 
 
   if (split_sh || raw_inputs || gaussian_backward || warp_culling || separate_sort) {
-    checkFusedInputs(means3D, weights_for_frequency_angle, frequency_lengths, phases,
-                     F, scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
+    checkFusedInputs(means3D, frequency_vectors,  phases,
+                     scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
                      colors, colors2, degree, split_sh, raw_inputs);
     checkTensor(background, means3D, "background");
     checkTensor(means3D, means3D, "means3D");
-    checkTensor(weights_for_frequency_angle, means3D, "weights_for_frequency_angle");
-    checkTensor(frequency_lengths, means3D, "frequency_lengths");
+    checkTensor(frequency_vectors, means3D, "frequency_vectors");
     checkTensor(phases, means3D, "phases");
     checkTensor(colors, means3D, "colors");
     checkTensor(colors2, means3D, "colors2");
@@ -265,10 +260,9 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 		background.contiguous().data<float>(),
 		W, H,
 		means3D.contiguous().data<float>(),
-		weights_for_frequency_angle.contiguous().data<float>(),
-		frequency_lengths.contiguous().data<float>(),
+		frequency_vectors.contiguous().data<float>(),
+
 		phases.contiguous().data<float>(),
-		F,
 		sh.contiguous().data_ptr<float>(),
 		sh2.contiguous().data_ptr<float>(),
 		colors.contiguous().data<float>(),
@@ -300,10 +294,9 @@ static RasterizeResult RasterizeGaborsCUDAImpl(
 static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -344,9 +337,10 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 
   CHECK_INPUT(background);
   CHECK_INPUT(means3D);
-  CHECK_INPUT(weights_for_frequency_angle);
-  CHECK_INPUT(frequency_lengths);
+  CHECK_INPUT(frequency_vectors);
   CHECK_INPUT(phases);
+  checkShape(frequency_vectors, means3D.size(0), 2, "frequency_vectors");
+  checkShape(phases, means3D.size(0), 1, "phases");
   CHECK_INPUT(radii);
   CHECK_INPUT(colors);
   CHECK_INPUT(colors2);
@@ -362,7 +356,6 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
   CHECK_INPUT(imageBuffer);
   CHECK_INPUT(geomBuffer);
 
-  TORCH_CHECK(F >= 1 && F <= 4, "F must be between 1 and 4");
   TORCH_CHECK(backward_reduction_threshold >= 0 && backward_reduction_threshold <= 32,
               "backward_reduction_threshold must be between 0 and 32");
   const bool has_attributes = attributes_precomp.defined() && attributes_precomp.dim() == 2;
@@ -405,13 +398,12 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 
 
   if (split_sh || raw_inputs || gaussian_backward || separate_sort || backward_reduction || has_attributes) {
-    checkFusedInputs(means3D, weights_for_frequency_angle, frequency_lengths, phases,
-                     F, scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
+    checkFusedInputs(means3D, frequency_vectors,  phases,
+                     scales, rotations, transMat_precomp, sh, sh2, sh_rest, sh2_rest,
                      colors, colors2, degree, split_sh, raw_inputs);
     checkTensor(background, means3D, "background");
     checkTensor(means3D, means3D, "means3D");
-    checkTensor(weights_for_frequency_angle, means3D, "weights_for_frequency_angle");
-    checkTensor(frequency_lengths, means3D, "frequency_lengths");
+    checkTensor(frequency_vectors, means3D, "frequency_vectors");
     checkTensor(phases, means3D, "phases");
     checkTensor(colors, means3D, "colors");
     checkTensor(colors2, means3D, "colors2");
@@ -449,9 +441,8 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
   if (grad_attributes) *grad_attributes = dL_dattributes;
   torch::Tensor dL_dnormal = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
-  torch::Tensor dL_dweights_for_frequency_angle = torch::zeros({P, F}, means3D.options());
-  torch::Tensor dL_dfrequency_lengths = torch::zeros({P, F}, means3D.options());
-  torch::Tensor dL_dphases = torch::zeros({P, F}, means3D.options());
+  torch::Tensor dL_dfrequency_vectors = torch::zeros({P, 2}, means3D.options());
+  torch::Tensor dL_dphases = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_dtransMat = torch::zeros({P, 9}, means3D.options());
   torch::Tensor dL_dsh = split_sh ? torch::zeros_like(sh) : torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dsh2 = split_sh ? torch::zeros_like(sh2) : torch::zeros({P, M, 3}, means3D.options());
@@ -470,10 +461,9 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	  background.contiguous().data<float>(),
 	  W, H,
 	  means3D.contiguous().data<float>(),
-	  weights_for_frequency_angle.contiguous().data<float>(),
-	  frequency_lengths.contiguous().data<float>(),
+	  frequency_vectors.contiguous().data<float>(),
+
 	  phases.contiguous().data<float>(),
-	  F,
 	  sh.contiguous().data<float>(),
 	  sh2.contiguous().data<float>(),
 	  colors.contiguous().data<float>(),
@@ -496,8 +486,7 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	  dL_dmeans2D.contiguous().data<float>(),
 	  dL_dnormal.contiguous().data<float>(),
 	  dL_dopacity.contiguous().data<float>(),
-	  dL_dweights_for_frequency_angle.contiguous().data<float>(),
-	  dL_dfrequency_lengths.contiguous().data<float>(),
+	  dL_dfrequency_vectors.contiguous().data<float>(),
 	  dL_dphases.contiguous().data<float>(),
 	  dL_dcolors.contiguous().data<float>(),
 	  dL_dcolors2.contiguous().data<float>(),
@@ -524,16 +513,15 @@ static RasterizeFusedBackwardResult RasterizeGaborsBackwardCUDAImpl(
 	  has_attributes ? dL_dattributes.data_ptr<float>() : nullptr);
   }
 
-  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dweights_for_frequency_angle, dL_dfrequency_lengths, dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image, dL_dsh_rest, dL_dsh2_rest);
+  return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dcolors2, dL_dopacity, dL_dfrequency_vectors,  dL_dphases, dL_dmeans3D, dL_dtransMat, dL_dsh, dL_dsh2, dL_dscales, dL_drotations, d_image, dL_dsh_rest, dL_dsh2_rest);
 }
 
 RasterizeResult RasterizeGaborsCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -554,16 +542,15 @@ RasterizeResult RasterizeGaborsCUDA(
 	const bool prefiltered,
 	const bool debug) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, torch::Tensor(), torch::Tensor(), false, false, false, false, false, 4);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, torch::Tensor(), torch::Tensor(), false, false, false, false, false, 4);
 }
 
 RasterizeResult RasterizeGaborsFusedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -588,16 +575,15 @@ RasterizeResult RasterizeGaborsFusedCUDA(
 	const bool split_sh,
 	const bool raw_inputs) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, false, false, false, 4);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, false, false, false, 4);
 }
 
 RasterizeResult RasterizeGaborsBoundedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -623,16 +609,15 @@ RasterizeResult RasterizeGaborsBoundedCUDA(
 	const bool raw_inputs,
 	const bool tight_bbox) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, false, false, 4);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, false, false, 4);
 }
 
 RasterizeResult RasterizeGaborsCulledCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -661,16 +646,15 @@ RasterizeResult RasterizeGaborsCulledCUDA(
 	const bool load_balance,
 	const int tile_culling_threshold) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold);
 }
 
 RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -694,18 +678,17 @@ RasterizeBackwardResult RasterizeGaborsBackwardCUDA(
 	const torch::Tensor& imageBuffer,
 	const bool debug) {
   auto result = RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, torch::Tensor(), torch::Tensor(), false, false);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, torch::Tensor(), torch::Tensor(), false, false);
   return std::make_tuple(
-    std::get<0>(result), std::get<1>(result), std::get<2>(result), std::get<3>(result), std::get<4>(result), std::get<5>(result), std::get<6>(result), std::get<7>(result), std::get<8>(result), std::get<9>(result), std::get<10>(result), std::get<11>(result), std::get<12>(result), std::get<13>(result));
+    std::get<0>(result), std::get<1>(result), std::get<2>(result), std::get<3>(result), std::get<4>(result), std::get<5>(result), std::get<6>(result), std::get<7>(result), std::get<8>(result), std::get<9>(result), std::get<10>(result), std::get<11>(result), std::get<12>(result));
 }
 
 RasterizeFusedBackwardResult RasterizeGaborsBackwardFusedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -733,16 +716,15 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardFusedCUDA(
 	const bool split_sh,
 	const bool raw_inputs) {
   return RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs);
 }
 
 RasterizeResult RasterizeGaborsGaussianBackwardCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -772,17 +754,16 @@ RasterizeResult RasterizeGaborsGaussianBackwardCUDA(
 	const int tile_culling_threshold,
 	const bool gaussian_backward) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward);
 }
 
 // Separate export preserves the positional APIs of earlier rasterizers.
 RasterizeResult RasterizeGaborsWarpCulledCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -813,17 +794,16 @@ RasterizeResult RasterizeGaborsWarpCulledCUDA(
 	const bool gaussian_backward,
 	const bool warp_culling) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling);
 }
 
 // Separate export preserves earlier positional APIs.
 RasterizeResult RasterizeGaborsSeparateSortedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -855,16 +835,15 @@ RasterizeResult RasterizeGaborsSeparateSortedCUDA(
 	const bool warp_culling,
 	const bool separate_sort) {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort);
 }
 
 RasterizeFusedBackwardResult RasterizeGaborsBackwardGaussianCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -895,17 +874,16 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardGaussianCUDA(
 	const torch::Tensor& final_image,
 	const torch::Tensor& final_aux) {
   return RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux);
 }
 
 // Keep the forward-selected binning layout for either backward algorithm.
 RasterizeFusedBackwardResult RasterizeGaborsBackwardSeparateSortedCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -937,17 +915,16 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardSeparateSortedCUDA(
 	const torch::Tensor& final_aux,
 	const bool separate_sort) {
   return RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort);
 }
 
 // Separate export keeps all existing native backward APIs unchanged.
 RasterizeFusedBackwardResult RasterizeGaborsBackwardButterflyCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -981,16 +958,15 @@ RasterizeFusedBackwardResult RasterizeGaborsBackwardButterflyCUDA(
 	const bool backward_reduction,
 	const int backward_reduction_threshold) {
   return RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold);
 }
 
 RasterizeResult RasterizeGaborsSpecularCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -1024,16 +1000,15 @@ RasterizeResult RasterizeGaborsSpecularCUDA(
 	const torch::Tensor& specular_precomp)
 {
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort, specular_precomp);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, gaussian_backward, warp_culling, separate_sort, specular_precomp);
 }
 
 RasterizeSpecularBackwardResult RasterizeGaborsBackwardSpecularCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -1070,17 +1045,16 @@ RasterizeSpecularBackwardResult RasterizeGaborsBackwardSpecularCUDA(
 {
   torch::Tensor grad_specular;
   auto result = RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold, specular_precomp, &grad_specular);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, gaussian_backward, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold, specular_precomp, &grad_specular);
   return std::tuple_cat(result, std::make_tuple(grad_specular));
 }
 
 RasterizeResult RasterizeGaborsAttributesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
 	const torch::Tensor& opacity,
@@ -1117,16 +1091,15 @@ RasterizeResult RasterizeGaborsAttributesCUDA(
   // Attribute gradients use the pixel/butterfly path to avoid six-channel
   // per-bucket Gaussian-backward checkpoints. Existing exports are unchanged.
   return RasterizeGaborsCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, false, warp_culling, separate_sort, specular_precomp, attributes_precomp);
+    background, means3D, frequency_vectors,  phases, colors, colors2, opacity, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, image_height, image_width, sh, sh2, degree, campos, prefiltered, debug, sh_rest, sh2_rest, split_sh, raw_inputs, tight_bbox, tile_culling, load_balance, tile_culling_threshold, false, warp_culling, separate_sort, specular_precomp, attributes_precomp);
 }
 
 RasterizeAttributesBackwardResult RasterizeGaborsBackwardAttributesCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
-	const torch::Tensor& weights_for_frequency_angle,
-	const torch::Tensor& frequency_lengths,
+	const torch::Tensor& frequency_vectors,
+
 	const torch::Tensor& phases,
-	const int F,
 	const torch::Tensor& radii,
 	const torch::Tensor& colors,
 	const torch::Tensor& colors2,
@@ -1164,7 +1137,7 @@ RasterizeAttributesBackwardResult RasterizeGaborsBackwardAttributesCUDA(
 {
   torch::Tensor grad_specular, grad_attributes;
   auto result = RasterizeGaborsBackwardCUDAImpl(
-    background, means3D, weights_for_frequency_angle, frequency_lengths, phases, F, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, false, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold, specular_precomp, &grad_specular, attributes_precomp, &grad_attributes);
+    background, means3D, frequency_vectors,  phases, radii, colors, colors2, scales, rotations, scale_modifier, transMat_precomp, viewmatrix, projmatrix, tan_fovx, tan_fovy, dL_dout_color, dL_dout_others, sh, sh2, degree, campos, geomBuffer, R, binningBuffer, imageBuffer, debug, sh_rest, sh2_rest, split_sh, raw_inputs, false, final_image, final_aux, separate_sort, backward_reduction, backward_reduction_threshold, specular_precomp, &grad_specular, attributes_precomp, &grad_attributes);
   return std::tuple_cat(result, std::make_tuple(grad_specular, grad_attributes));
 }
 
